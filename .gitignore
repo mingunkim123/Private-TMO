@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Dependencies
+libs/
+
+# Data & Models
+TMO/dataset/
+*.json
+*.csv
+*.h5
+*.pth
+*.pt
+models/
+data/
+
+# IDE & Editor
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Logs
+logs/
+*.log
+
+# Build
+build/
+dist/
+*.egg-info/
