@@ -13,3 +13,6 @@ Budget-Constrained Policy Learning(금전적 예산과 지연 시간 제약 안�
 FrugalGPT: How to Use Large Language Models
 While Reducing Cost and Improving Performance(모델 순차적 선택)
 
+Federated Split Learning With Joint
+Personalization-Generalization for Inference-Stage
+Optimization in Wireless Edge Networks(개인화 모델과 일반화 모델의 분리)
