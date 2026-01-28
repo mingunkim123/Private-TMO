@@ -234,29 +234,17 @@ subject to: Σₜ PrivacyRisk(qₜ, aₜ) ≤ ε
 
 ---
 
-## Benchmark Results (Expected)
+## Benchmark Results
 
 ```
-================================================================
-Method                   Reward    Quality   Privacy   Accuracy
-----------------------------------------------------------------
-privacy_tmo_0.5          0.723     0.78      0.12      92.3%
-privacy_tmo_1.0          0.698     0.82      0.25      87.1%
-threshold_0.5            0.645     0.75      0.18      78.5%
-no_protection            0.612     0.90      0.85      45.0%
-local_only               0.489     0.60      0.00      55.0%
-================================================================
+
 ```
 
 ---
 
 ## Hardware Requirements
 
-| Device | RAM | GPU | Status |
-|--------|-----|-----|--------|
-| Jetson Orin Nano | 8GB | 1024 CUDA | Primary Target |
-| Jetson TX2 | 8GB | 256 CUDA | Tested |
-| Desktop (RTX 3080) | 32GB | 10GB VRAM | Development |
+
 
 ---
 
