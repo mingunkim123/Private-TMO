@@ -1,113 +1,286 @@
-# 🛡️ Jetson-Secure-TMO
-## Privacy-Preserving Offloading for Personalized LLMs
+# Privacy-TMO
 
-본 프로젝트는 **TMO (Task / Model Offloading)** 프레임워크를 기반으로 하며,  
-**Jetson Orin Nano (8GB)** 환경에서 **TensorRT-LLM**을 지원하도록  
-추론 엔진을 최적화하고,  
-**계층적 개인화(Hierarchical Personalization)** 및  
-**개인정보 보호(Privacy Guard)** 기능을 통합한  
-프라이버시 중심 LLM 오프로딩 시스템입니다.
+**Privacy-Preserving Personalized LLM Offloading for Edge-Cloud Collaboration**
 
----
+[![Python 3.10](https://img.shields.io/badge/Python-3.10-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## 🚀 Key Features
-
-### 🔹 Edge–Cloud Collaboration
-데이터 소유권(Data Ownership)과 포터빌리티(Data Portability) 원칙을  
-엣지 엔드포인트(Jetson)에 직접 구현합니다.  
-지연 시간(Latency)과 비용(Cost)을 고려하여  
-로컬(Jetson)과 클라우드 간 추론 작업을 동적으로 스케줄링합니다.
+> 기존 [TMO (MobiHoc 2025)](./TMO/README.md) 프레임워크를 확장하여, **프라이버시 보호**와 **On-Device 개인화**를 추가한 Edge-Cloud LLM 오프로딩 시스템
 
 ---
 
-### 🔹 Hierarchical LoRA Selection
-사용자의 작업 성격과 민감도에 따라  
-Personal / Group / General 계층의  
-LoRA 어댑터를 실시간으로 교체합니다.
+## Overview
 
-이는 민감도 기반 데이터 노출을 제한하는  
-계층적 사용자 프로필 설계 원칙을 따릅니다.
+Privacy-TMO는 민감한 사용자 데이터를 보호하면서 고품질 LLM 응답을 제공합니다.
 
----
-
-### 🔹 Privacy-First Guard
-BERT 기반 NER 모델을 활용하여  
-질문 내 개인 식별 정보(PII)를 탐지합니다.
-
-보안 점수(Security Score)에 따라  
-클라우드 전송 여부를 결정하며,  
-하드웨어 수준 보호와 결합된 아키텍처 제어를 통해  
-불필요한 데이터 노출을 차단합니다.
-
----
-
-### 🔹 Hardware Optimization
-Jetson Orin Nano의 제한된 메모리(8GB) 환경에서도  
-원활한 구동을 위해 다음을 적용했습니다:
-
-- INT4 양자화
-- TensorRT-LLM 가속
-- 하드웨어 기반 보안 메커니즘 통합
-
-이를 통해  
-**신뢰 가능한 실행 환경(TEE 지향 구조)** 의 기반을 마련합니다.
-
----
-
-## 🏗️ System Architecture
-
-본 시스템은 단순한 모델 실행을 넘어,  
-다음과 같은 **학술적 메커니즘을 통합**하여 설계되었습니다.
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        User Query                               │
+│           "My password is secret123. What is Python?"           │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  Sensitivity Classifier                         │
+│                 (Rule + NER + ML Hybrid)                        │
+│                                                                 │
+│    🟢 PUBLIC    🟡 SEMI-SENSITIVE    🔴 PRIVATE                │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+        ┌──────────┐   ┌──────────────┐   ┌──────────┐
+        │  Cloud   │   │   Hybrid     │   │  Local   │
+        │   LLM    │   │ (Selective)  │   │   LLM    │
+        └──────────┘   └──────────────┘   └──────────┘
+              │               │               │
+              └───────────────┼───────────────┘
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  Response Aggregation                           │
+│              Privacy-Preserving Final Output                    │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-### 1️⃣ Context-Aware Policy
-질문의 복잡도(Complexity)와  
-지연 시간·비용 예산(Budget Constraints)을 분석하여  
-**최적의 추론 경로 및 모델을 선택**합니다.
+## Key Features
 
-> 참고: *Efficient Contextual LLM Cascades*
+### 1. On-Device LoRA Personalization
+- **QLoRA (4-bit)** 양자화로 Jetson 8GB에서 학습 가능
+- 개인 데이터는 **절대로 디바이스를 떠나지 않음**
+- Personal / Group / General 계층적 어댑터 관리
 
----
+### 2. Sensitivity-Aware Selective Offloading
+- **3단계 민감도 분류**: Public / Semi-sensitive / Private
+- **쿼리 분해**: 민감한 부분만 로컬에서 처리
+- **Partial Offloading**: Binary 결정이 아닌 세밀한 제어
 
-### 2️⃣ Personalization–Generalization Split
-- **민감한 개인 정보** → 로컬 LoRA 어댑터
-- **일반적인 지식 질의** → 클라우드 LLM
+### 3. Privacy-Aware Reinforcement Learning
+- **확장된 보상 함수**: 기존 TMO + Privacy Risk 패널티
+- **Privacy Budget**: ε-differential privacy 스타일 제약
+- **Lagrangian Relaxation**으로 제약 조건 처리
 
-데이터 격리(Data Isolation) 및  
-보안 집계(Secure Aggregation)를 통해  
-**프라이버시를 유지하면서 정보 비대칭을 해소**합니다.
-
----
-
-### 3️⃣ Cost–Performance Optimization
-**FrugalGPT 전략**을 차용하여  
-응답 품질(Quality)을 유지하면서도  
-클라우드 API 호출 비용을 최소화합니다.
+### 4. Comprehensive Evaluation
+- **Privacy Attack Simulation**: Canary Insertion, Membership Inference
+- **Baseline Comparison**: No Protection, Local Only, Threshold-based
+- **Jetson Profiling**: 지연시간, 메모리, 전력 측정
 
 ---
 
-## 📚 References & Acknowledgments
+## Installation
 
-본 프로젝트는 다음 연구들을 기반으로 설계 및 구현되었습니다.
+```bash
+# Clone repository
+git clone https://github.com/your-repo/Privacy-TMO.git
+cd Privacy-TMO
 
-- **TMO Framework**  
-  Task / Model Offloading Framework for Edge–Cloud LLM Inference
+# Install dependencies
+pip install -r requirements.txt
 
-- **MoA-OFF**  
-  Adaptive Heterogeneous Modality-Aware Offloading with Edge–Cloud Collaboration
+# (Optional) For Jetson deployment
+pip install pynvml  # GPU monitoring
+```
 
-- **PerLLM**  
-  Personalized Inference Scheduling with Edge–Cloud Collaboration
-
-- **FrugalGPT**  
-  How to Use Large Language Models While Reducing Cost and Improving Performance
-
-- **Federated Split Learning**  
-  Joint Personalization–Generalization for Inference-Stage Optimization
-
-- **Privacy-Preserving Personalization**  
-  Hierarchical User Profiling Methods for Privacy Protection
+### Requirements
+- Python >= 3.10
+- PyTorch >= 2.2.0
+- Transformers >= 4.36.0
+- PEFT >= 0.7.0 (for LoRA)
+- stable-baselines3 >= 2.2.1
 
 ---
 
+## Project Structure
+
+```
+Privacy-TMO/
+├── privacy_tmo/                    # Core module
+│   ├── config.py                   # Configuration management
+│   ├── lora_trainer.py             # On-device LoRA training (QLoRA)
+│   ├── sensitivity_classifier.py   # 3-level sensitivity classification
+│   ├── privacy_manager.py          # Privacy budget management
+│   ├── query_decomposer.py         # Query decomposition & selective offloading
+│   ├── privacy_rl.py               # Privacy-aware RL (extended reward)
+│   ├── response_aggregator.py      # Hybrid response aggregation
+│   ├── privacy_attacks.py          # Attack simulations (Canary, MIA)
+│   ├── benchmark.py                # Benchmarking suite
+│   └── profiler.py                 # Performance profiler
+│
+├── lora_manager.py                 # Hierarchical LoRA adapter manager
+├── tmo_interface.py                # Inference interface (Ollama + Groq)
+├── requirements.txt                # Dependencies
+│
+└── TMO/                            # Original TMO framework
+    └── main/
+        ├── main.py                 # Training entry point
+        ├── models.py               # RC_PPO, RC_A2C, RC_DQN
+        └── utils.py                # M4A1 Environment
+```
+
+---
+
+## Quick Start
+
+### 1. Basic Usage
+
+```python
+from privacy_tmo import (
+    PrivacyManager,
+    SensitivityClassifier,
+    QueryDecomposer,
+    HybridInferenceEngine
+)
+
+# Initialize components
+privacy_manager = PrivacyManager()
+classifier = SensitivityClassifier()
+
+# Classify query sensitivity
+query = "My password is secret123. What is Python?"
+result = classifier.classify(query)
+
+print(f"Level: {result.level.name}")  # SEMI_SENSITIVE
+print(f"Score: {result.score:.2f}")   # 0.75
+
+# Make offloading decision
+decision = privacy_manager.make_offloading_decision(query)
+print(f"Decision: {decision.decision.value}")  # hybrid
+```
+
+### 2. Train Personal LoRA
+
+```python
+from privacy_tmo import LoRATrainer, train_personal_lora
+
+# Quick training
+adapter_path = train_personal_lora(
+    user_data_path="./data/user_history.json",
+    output_dir="./lora_adapters/personal"
+)
+
+# Or with full control
+trainer = LoRATrainer()
+trainer.setup_model("meta-llama/Llama-3.2-3B")
+trainer.setup_lora(adapter_name="personal")
+trainer.prepare_dataset("./data/user_history.json")
+trainer.train()
+```
+
+### 3. Run Benchmark
+
+```python
+from privacy_tmo import BenchmarkSuite, BenchmarkConfig
+
+config = BenchmarkConfig(
+    num_episodes=100,
+    privacy_budgets=[0.3, 0.5, 0.7, 1.0]
+)
+
+suite = BenchmarkSuite(config)
+results = suite.run_benchmark()
+print(suite.generate_report())
+```
+
+### 4. Privacy Attack Evaluation
+
+```python
+from privacy_tmo import PrivacyAttackSimulator
+
+simulator = PrivacyAttackSimulator()
+
+# Prepare canary attack
+canaries = simulator.prepare_canary_attack(num_canaries=10)
+
+# Run attack
+result = simulator.run_canary_attack(inference_fn)
+print(f"Extraction rate: {result.success_rate:.2%}")
+```
+
+---
+
+## Technical Contributions
+
+### Extended Reward Function
+
+**Original TMO:**
+```
+R = α·Quality + β₁·Association - β₂·Latency - β₃·Cost
+```
+
+**Privacy-TMO:**
+```
+R = α·Quality + β₁·Association - β₂·Latency - β₃·Cost 
+    - β₄·PrivacyRisk + γ·BudgetBonus
+
+subject to: Σₜ PrivacyRisk(qₜ, aₜ) ≤ ε
+```
+
+### Sensitivity Classification
+
+| Level | Description | Action |
+|-------|-------------|--------|
+| 🟢 PUBLIC | General knowledge queries | Cloud OK |
+| 🟡 SEMI-SENSITIVE | Context-dependent, some PII | Hybrid |
+| 🔴 PRIVATE | Contains passwords, SSN, etc. | Local Only |
+
+### Query Decomposition Strategies
+
+| Strategy | Use Case | Example |
+|----------|----------|---------|
+| Sentence | Multi-sentence queries | Split by sentence, route separately |
+| Entity | Clear PII entities | Mask entities, send masked version |
+| Clause | Complex single sentence | Split by clauses |
+
+---
+
+## Benchmark Results (Expected)
+
+```
+================================================================
+Method                   Reward    Quality   Privacy   Accuracy
+----------------------------------------------------------------
+privacy_tmo_0.5          0.723     0.78      0.12      92.3%
+privacy_tmo_1.0          0.698     0.82      0.25      87.1%
+threshold_0.5            0.645     0.75      0.18      78.5%
+no_protection            0.612     0.90      0.85      45.0%
+local_only               0.489     0.60      0.00      55.0%
+================================================================
+```
+
+---
+
+## Hardware Requirements
+
+| Device | RAM | GPU | Status |
+|--------|-----|-----|--------|
+| Jetson Orin Nano | 8GB | 1024 CUDA | Primary Target |
+| Jetson TX2 | 8GB | 256 CUDA | Tested |
+| Desktop (RTX 3080) | 32GB | 10GB VRAM | Development |
+
+---
+
+## References
+
+- **TMO**: Local-Cloud Inference Offloading for LLMs (MobiHoc 2025)
+- **FrugalGPT**: How to Use LLMs While Reducing Cost
+- **QLoRA**: Efficient Finetuning of Quantized LLMs
+- **PEFT**: Parameter-Efficient Fine-Tuning
+
+---
+
+## Citation
+
+```bibtex
+@article{privacy-tmo,
+  title={Privacy-Preserving Personalized LLM Offloading for Edge-Cloud Collaboration},
+  author={},
+  year={2025}
+}
+```
+
+---
+
+## License
+
+MIT License - see [LICENSE](./TMO/LICENSE) for details.
