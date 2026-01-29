@@ -46,45 +46,69 @@ Privacy-TMO는 민감한 사용자 데이터를 보호하면서 고품질 LLM �
 
 ## Data Flow Summary
 
-```mermaid
-flowchart TB
-    Start[Start] --> Args[ArgsParser]
-    Args --> EnvInit[M4A1_Env_Init]
-    EnvInit --> PM[PrivacyManager]
-    EnvInit --> QD[QueryDecomposer]
-    EnvInit --> RA[ResponseAggregator]
-    EnvInit --> RL[RL_Models]
-    RL --> Step[Env_step]
-    Step --> Prompt[GetPrompt]
-    Prompt --> Sensitivity[AnalyzeQuery]
-    Sensitivity --> Risk[SecurityScore_PrivacyRisk]
-    Risk --> Local[LocalInference]
-    Risk --> Decompose[DecomposeQuery]
-    Decompose --> Hybrid[HybridInference]
-    Hybrid --> Aggregate[AggregateResponse]
-    Local --> Reward[ComputeReward]
-    Aggregate --> Reward
-    Reward --> NextState[AugmentState]
-    NextState --> RL
 ```
+4. 데이터 흐름 요약
+┌─────────────────────────────────────────────────────────────────┐
+│                    전체 데이터 플로우                            │
+└─────────────────────────────────────────────────────────────────┘
 
-핵심 연결 흐름:
-- `main.py` → `options.py`에서 설정 로드 → `M4A1_Env` 생성
-- `M4A1_Env`는 `PrivacyManager`, `QueryDecomposer`, `ResponseAggregator`를 초기화
-- `step(action)`에서:
-  - 프롬프트 추출 → 민감도 분석 → 보안 점수/리스크 계산
-  - 로컬 추론 (`tmo_interface.get_local_inference`) 또는 하이브리드 처리
-  - 하이브리드일 때 `QueryDecomposer`로 분해 → 로컬/클라우드 병렬 실행 → `ResponseAggregator`로 통합
-  - Privacy Budget 소비 후 확장 보상 계산 (security_score + privacy_risk + budget_bonus)
-  - 민감도/예산 정보를 관측값에 추가해 다음 상태 생성
-- RL 모델은 `resource_constraint()`에서 민감도/예산 기반 privacy penalty를 추가로 반영
+1. 초기화 단계
+   main.py
+   ├─> args_parser() → options.py (설정 로드)
+   ├─> M4A1_Env 생성
+   │   ├─> PrivacyManager 초기화
+   │   ├─> QueryDecomposer 초기화
+   │   ├─> ResponseAggregator 초기화
+   │   └─> observation_space 확장 (+3 차원)
+   └─> RL 모델 생성 (RC_PPO/A2C/DQN)
 
-관측값 구조:
-- `base_state(5×time_span)` + `sensitivity_level` + `sensitivity_score` + `budget_ratio`
+2. 학습 루프 (각 Step)
+   RL Agent
+   ├─> predict(observation) → action 선택
+   │   └─> M4A1_Env.step(action)
+   │       ├─> [1] 프롬프트 추출
+   │       │   └─> _get_current_prompt()
+   │       ├─> [2] 민감도 분석
+   │       │   └─> PrivacyManager.analyze_query()
+   │       │       └─> SensitivityClassifier.classify()
+   │       │           ├─> RuleBasedDetector (정규식)
+   │       │           ├─> NERBasedDetector (BERT)
+   │       │           └─> 가중치 투표
+   │       ├─> [3] 보안 점수 & Privacy Risk
+   │       │   ├─> PrivacyManager.get_security_score()
+   │       │   └─> PrivacyManager.calculate_privacy_risk()
+   │       ├─> [4] 추론 실행
+   │       │   ├─> action == 0: 로컬만
+   │       │   │   └─> tmo_interface.get_local_inference()
+   │       │   │       └─> LoRAManager.select_adapter()
+   │       │   │           └─> Ollama (로컬 LLM)
+   │       │   └─> action > 0: 클라우드/하이브리드
+   │       │       ├─> QueryDecomposer.decompose()
+   │       │       │   └─> Sentence/Entity/Clause 전략
+   │       │       ├─> 하이브리드인 경우:
+   │       │       │   ├─> tmo_interface.get_local_inference(local_query)
+   │       │       │   ├─> tmo_interface.get_cloud_inference(cloud_query)
+   │       │       │   └─> ResponseAggregator.aggregate()
+   │       │       └─> 순수 클라우드인 경우:
+   │       │           └─> tmo_interface.get_cloud_inference()
+   │       │               └─> Groq API (클라우드 LLM)
+   │       ├─> [5] Privacy Budget 업데이트
+   │       │   └─> PrivacyBudget.consume(privacy_risk)
+   │       ├─> [6] 보상 계산
+   │       │   └─> 확장된 보상 함수 (Privacy Risk 포함)
+   │       └─> [7] 다음 상태 생성
+   │           └─> _augment_state() (프라이버시 특징 포함)
 
-모듈 의존성:
-- `main.py` → `utils.py` → `tmo_interface.py` + `privacy_tmo/*`
-- `tmo_interface.py` → `lora_manager.py` (LoRA 계층 선택)
+3. RL 모델 학습
+   RC_PPO.train()
+   ├─> rollout_buffer에서 데이터 샘플링
+   ├─> resource_constraint() 호출
+   │   ├─> excess_latency 계산
+   │   ├─> excess_usage 계산
+   │   └─> excess_privacy 계산 ← 새로 추가
+   │       └─> observation에서 민감도/예산 정보 추출
+   └─> loss에 privacy penalty 추가
+```
 
 ---
 
