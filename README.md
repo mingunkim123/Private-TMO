@@ -44,6 +44,50 @@ Privacy-TMO는 민감한 사용자 데이터를 보호하면서 고품질 LLM �
 
 ---
 
+## Data Flow Summary
+
+```mermaid
+flowchart TB
+    Start[Start] --> Args[ArgsParser]
+    Args --> EnvInit[M4A1_Env_Init]
+    EnvInit --> PM[PrivacyManager]
+    EnvInit --> QD[QueryDecomposer]
+    EnvInit --> RA[ResponseAggregator]
+    EnvInit --> RL[RL_Models]
+    RL --> Step[Env_step]
+    Step --> Prompt[GetPrompt]
+    Prompt --> Sensitivity[AnalyzeQuery]
+    Sensitivity --> Risk[SecurityScore_PrivacyRisk]
+    Risk --> Local[LocalInference]
+    Risk --> Decompose[DecomposeQuery]
+    Decompose --> Hybrid[HybridInference]
+    Hybrid --> Aggregate[AggregateResponse]
+    Local --> Reward[ComputeReward]
+    Aggregate --> Reward
+    Reward --> NextState[AugmentState]
+    NextState --> RL
+```
+
+핵심 연결 흐름:
+- `main.py` → `options.py`에서 설정 로드 → `M4A1_Env` 생성
+- `M4A1_Env`는 `PrivacyManager`, `QueryDecomposer`, `ResponseAggregator`를 초기화
+- `step(action)`에서:
+  - 프롬프트 추출 → 민감도 분석 → 보안 점수/리스크 계산
+  - 로컬 추론 (`tmo_interface.get_local_inference`) 또는 하이브리드 처리
+  - 하이브리드일 때 `QueryDecomposer`로 분해 → 로컬/클라우드 병렬 실행 → `ResponseAggregator`로 통합
+  - Privacy Budget 소비 후 확장 보상 계산 (security_score + privacy_risk + budget_bonus)
+  - 민감도/예산 정보를 관측값에 추가해 다음 상태 생성
+- RL 모델은 `resource_constraint()`에서 민감도/예산 기반 privacy penalty를 추가로 반영
+
+관측값 구조:
+- `base_state(5×time_span)` + `sensitivity_level` + `sensitivity_score` + `budget_ratio`
+
+모듈 의존성:
+- `main.py` → `utils.py` → `tmo_interface.py` + `privacy_tmo/*`
+- `tmo_interface.py` → `lora_manager.py` (LoRA 계층 선택)
+
+---
+
 ## Key Features
 
 ### 1. On-Device LoRA Personalization
