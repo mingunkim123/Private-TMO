@@ -10,6 +10,7 @@ args = args_parser()
 
 sys.path.append('/data/my_tmo_project') 
 import tmo_interface
+from privacy_tmo import PrivacyManager, QueryDecomposer, ResponseAggregator, AggregationStrategy
 
 def preprocess_data(dataset):
     episodes = [] 
@@ -74,7 +75,7 @@ def split_dataset(data, test_ratio=0.2):
     return train_set, test_set
 
 class M4A1_Env(gym.Env):
-    def __init__(self, dataset, weights, local_device, cloud_server, latency_budget, usage_budget, Resource_Constraint, time_span, Train):
+    def __init__(self, dataset, weights, local_device, cloud_server, latency_budget, usage_budget, privacy_budget=None, Resource_Constraint=False, time_span=5, Train=None):
         super(M4A1_Env, self).__init__()
         self.dataset = preprocess_data(dataset)
         self.episodes = create_long_samples(self.dataset)
@@ -87,7 +88,24 @@ class M4A1_Env(gym.Env):
         self.time_span = time_span
         
         self.action_space = gym.spaces.Discrete(9)
-        self.observation_space = gym.spaces.Box(low=np.array([0, 0, 0, 0, 0]*self.time_span), high=np.array([1, 1, 1, 1, 3]*self.time_span), shape=(5*self.time_span,), dtype=np.float32)
+        self.base_state_dim = 5 * self.time_span
+        self.enable_privacy_features = True
+        self.privacy_feature_dim = 3  # [sensitivity_level, sensitivity_score, budget_ratio]
+        self.sensitivity_level_idx = self.base_state_dim
+        self.sensitivity_score_idx = self.base_state_dim + 1
+        self.budget_ratio_idx = self.base_state_dim + 2
+
+        base_low = np.array([0, 0, 0, 0, 0] * self.time_span)
+        base_high = np.array([1, 1, 1, 1, 3] * self.time_span)
+        if self.enable_privacy_features:
+            extra_low = np.zeros(self.privacy_feature_dim)
+            extra_high = np.ones(self.privacy_feature_dim)
+            low = np.concatenate([base_low, extra_low])
+            high = np.concatenate([base_high, extra_high])
+        else:
+            low = base_low
+            high = base_high
+        self.observation_space = gym.spaces.Box(low=low, high=high, dtype=np.float32)
         self.current_episode = 0
         self.current_step = 0
         self.current_states, self.current_actions, self.current_rewards, self.association_scores = self.episodes[self.current_episode]
@@ -97,6 +115,15 @@ class M4A1_Env(gym.Env):
         self.latency_costs = [self.local_time] + self.cloud_time
         self.usage_costs = [self.local_usage_cost] + self.cloud_usage_cost
         self.action_to_modality_indices = {0: [], 1: [], 2: [0], 3: [1], 4: [2], 5: [0, 1], 6: [0, 2], 7: [1, 2], 8: [0, 1, 2]}
+
+        self.privacy_manager = PrivacyManager(enable_ner=False, enable_ml=False)
+        if privacy_budget is None:
+            privacy_budget = getattr(args, "privacy_budget", 1.0)
+        if self.privacy_manager.budget:
+            self.privacy_manager.budget.epsilon = privacy_budget
+        self.query_decomposer = QueryDecomposer(self.privacy_manager.classifier)
+        self.response_aggregator = ResponseAggregator()
+        self.aggregation_strategy = AggregationStrategy.MERGE
 
         if Train:
             self.nn = NearestNeighbors(algorithm='kd_tree',n_neighbors=5, metric='euclidean')
@@ -153,7 +180,9 @@ class M4A1_Env(gym.Env):
         self.current_episode = random.randint(0, len(self.episodes) - 1)
         self.current_step = 0
         self.current_states, self.current_actions, self.current_rewards, self.association_scores = self.episodes[self.current_episode]
-        return np.array(self.current_states[self.current_step], dtype=np.float32), {}
+        current_prompt = self._get_current_prompt()
+        sensitivity_result = self.privacy_manager.analyze_query(current_prompt)
+        return self._augment_state(self.current_states[self.current_step], sensitivity_result), {}
         
     def normalization(self, values):
         min_value = min(values); max_value = max(values)
@@ -165,6 +194,38 @@ class M4A1_Env(gym.Env):
         new_Ass.extend(Ass[:3])
         new_Ass.extend([Ass[0] + Ass[1], Ass[0] + Ass[2], Ass[1] + Ass[2], Ass[0] + Ass[1] + Ass[2]])
         return new_Ass
+
+    def _get_current_prompt(self):
+        try:
+            return self.prompts[self.current_step]
+        except Exception:
+            sample_prompts = [
+                "What is the weather?",
+                "Tell me my password.",
+                "Summarize this medical record.",
+                "How to cook pasta?"
+            ]
+            return sample_prompts[self.current_step % len(sample_prompts)]
+
+    def _augment_state(self, base_state, sensitivity_result=None):
+        if not self.enable_privacy_features:
+            return np.array(base_state, dtype=np.float32)
+
+        if sensitivity_result is None:
+            sensitivity_level = 0.0
+            sensitivity_score = 0.0
+        else:
+            sensitivity_level = sensitivity_result.level.value / 2.0
+            sensitivity_score = sensitivity_result.score
+
+        if self.privacy_manager.budget and self.privacy_manager.budget.epsilon > 0:
+            budget_ratio = self.privacy_manager.budget.remaining / self.privacy_manager.budget.epsilon
+            budget_ratio = min(max(budget_ratio, 0.0), 1.0)
+        else:
+            budget_ratio = 1.0
+
+        extra = np.array([sensitivity_level, sensitivity_score, budget_ratio], dtype=np.float32)
+        return np.concatenate([np.array(base_state, dtype=np.float32), extra])
 
     def to_one_hot(self, action):
         action = action.item() if isinstance(action, np.ndarray) else action
@@ -185,53 +246,47 @@ class M4A1_Env(gym.Env):
         association_score = self.normalization(self.Ass_transform(self.association_scores[self.current_step]))[action]
 
         # ---------------------------------------------------------
-        # [New 1] 현재 프롬프트 가져오기 (보안 검사를 위해 필수)
+        # [New 1] 현재 프롬프트 가져오기 + 민감도 분석
         # ---------------------------------------------------------
-        try:
-            # 데이터셋에 prompts가 있다면 가져오고, 없으면 임시 텍스트 사용
-            current_prompt = self.prompts[self.current_step]
-        except:
-            # 테스트용: 랜덤하게 민감한 질문을 섞음
-            import random
-            sample_prompts = [
-                "What is the weather?", 
-                "Tell me my password.", 
-                "Summarize this medical record.", 
-                "How to cook pasta?"
-            ]
-            current_prompt = sample_prompts[self.current_step % len(sample_prompts)]
+        current_prompt = self._get_current_prompt()
+        sensitivity_result = self.privacy_manager.analyze_query(current_prompt)
 
         # ---------------------------------------------------------
-        # [New 2] 보안 점수 계산 (tmo_interface 호출)
+        # [New 2] 보안 점수 계산 (PrivacyManager 사용)
         # ---------------------------------------------------------
-        # tmo_interface.py에 get_security_score 함수가 있어야 합니다.
-        security_score = tmo_interface.get_security_score(current_prompt, action)
+        security_score = self.privacy_manager.get_security_score(current_prompt, action)
+        privacy_risk = self.privacy_manager.calculate_privacy_risk(
+            sensitivity_result, offload_to_cloud=(action > 0)
+        )
 
         # ---------------------------------------------------------
-        # [Existing] 로컬 vs 클라우드 실행 및 비용 계산
+        # [New 3] 로컬/클라우드/하이브리드 실행
         # ---------------------------------------------------------
         if action == 0: # 로컬 LLM 선택 시
-            # 젯슨에서 "진짜" 실행
             _, real_latency = tmo_interface.get_local_inference(current_prompt)
-            
-            # 비용 계산
+
             norm_latency_cost = real_latency / 10.0  
             norm_usage_cost = 0.0 
-            
-            # [Log] 보안 점수 포함해서 출력
+
             print(f"🚀 [Local] Latency: {real_latency:.4f}s | Security: {security_score}")
 
-        else: # 클라우드 선택 시
-            # 클라우드 API 호출 (혹은 시뮬레이션)
-            _, real_latency = tmo_interface.get_cloud_inference(current_prompt)
+        else: # 클라우드/하이브리드 선택 시
+            decomposed = self.query_decomposer.decompose(current_prompt)
 
-            # 비용 계산
+            if decomposed.has_sensitive and decomposed.local_query and decomposed.cloud_query:
+                local_response, local_latency = tmo_interface.get_local_inference(decomposed.local_query)
+                cloud_response, cloud_latency = tmo_interface.get_cloud_inference(decomposed.cloud_query)
+                _ = self.response_aggregator.aggregate(
+                    decomposed, local_response, cloud_response, strategy=self.aggregation_strategy
+                )
+                real_latency = max(local_latency, cloud_latency)
+                print(f"🔀 [Hybrid] Latency: {real_latency:.4f}s | Security: {security_score}")
+            else:
+                _, real_latency = tmo_interface.get_cloud_inference(current_prompt)
+                print(f"☁️ [Cloud] Latency: {real_latency:.4f}s | Security: {security_score}")
+
             norm_latency_cost = real_latency / 10.0
-            # 사용량 비용은 기존 테이블 사용 (또는 0.1 등 상수 사용)
             norm_usage_cost = self.normalization(self.usage_costs)[len(modality_indices)+1]
-
-            # [Log] 보안 점수 포함해서 출력
-            print(f"☁️ [Cloud] Latency: {real_latency:.4f}s | Security: {security_score}")
 
         # ---------------------------------------------------------
         # [Existing] 기존 TMO 로직 (KNN 등)
@@ -242,21 +297,41 @@ class M4A1_Env(gym.Env):
         response_score = np.average(self.rewards[indices], weights=weight)
         
         # ---------------------------------------------------------
-        # [New 3] 최종 보상 함수 수정 (+ 보안 점수 반영)
+        # [New 4] 최종 보상 함수 수정 (+ 프라이버시 리스크/예산 반영)
         # ---------------------------------------------------------
-        # w_security: 보안 점수의 가중치 (0.5 ~ 1.0 권장)
-        # 민감한 질문을 클라우드로 보내면 security_score가 0이 되어 보상이 확 깎임
-        w_security = 1.0 
-        
+        w_security = self.weights[4] if len(self.weights) > 4 else 0.0
+
+        if action > 0 and privacy_risk > 0:
+            self.privacy_manager.budget.consume(
+                privacy_risk,
+                query_id=f"step_{self.current_step}",
+                details={"action": action, "score": sensitivity_result.score}
+            )
+
+        if self.privacy_manager.budget and self.privacy_manager.budget.epsilon > 0:
+            budget_ratio = self.privacy_manager.budget.remaining / self.privacy_manager.budget.epsilon
+            budget_ratio = min(max(budget_ratio, 0.0), 1.0)
+        else:
+            budget_ratio = 1.0
+
+        budget_bonus = 0.1 * budget_ratio
+
         reward = (self.weights[0] * response_score 
                 + self.weights[1] * association_score 
                 - self.weights[2] * norm_latency_cost 
                 - self.weights[3] * norm_usage_cost
-                + w_security * security_score) # <--- 핵심 추가!
+                + w_security * security_score
+                - w_security * privacy_risk
+                + budget_bonus)
 
         self.current_step += 1
         done = self.current_step >= len(self.current_states)
-        next_state = np.array(self.current_states[self.current_step], dtype=int) if not done else np.zeros(5*self.time_span) - 1
+        if not done:
+            next_prompt = self._get_current_prompt()
+            next_sensitivity = self.privacy_manager.analyze_query(next_prompt)
+            next_state = self._augment_state(self.current_states[self.current_step], next_sensitivity)
+        else:
+            next_state = np.zeros(self.base_state_dim + (self.privacy_feature_dim if self.enable_privacy_features else 0)) - 1
             
         return next_state, reward, done, False, {}
 
@@ -266,14 +341,19 @@ class M4A1_Env(gym.Env):
         modality_indices = self.action_to_modality_indices[action]
         association_score = self.Ass_transform(self.association_scores[self.current_step])[action]
         norm_association_score = self.normalization(self.Ass_transform(self.association_scores[self.current_step]))[action]
+
+        if len(state) > self.base_state_dim:
+            state_base = state[:self.base_state_dim]
+        else:
+            state_base = state
         
         total_latency = 0; total_usage = 0
         for i in range(self.time_span):
-            if state[i*5] == 0:
+            if state_base[i*5] == 0:
                 total_latency += self.local_time
                 total_usage += self.local_usage_cost
-            elif state[i*5] == 1:                
-                modalities_from_state = sum(state[i*5+1:i*5+4])
+            elif state_base[i*5] == 1:                
+                modalities_from_state = sum(state_base[i*5+1:i*5+4])
                 total_latency += self.cloud_time[modalities_from_state]
                 total_usage += self.cloud_usage_cost[modalities_from_state]    
         
@@ -288,16 +368,43 @@ class M4A1_Env(gym.Env):
             norm_latency_cost = self.normalization(self.latency_costs)[len(modality_indices)+1]
             norm_usage_cost = self.normalization(self.usage_costs)[len(modality_indices)+1]
         
-        state_action = np.hstack([state, real_action])
+        state_action = np.hstack([state_base, real_action])
         distances, indices = self.nn.kneighbors([state_action])
         weights = 1 / (distances + 1e-6)
         response_score = np.average(self.rewards[indices], weights=weights)
-        
-        reward = self.weights[0] * response_score + self.weights[1] * association_score - self.weights[2] * norm_latency_cost - self.weights[3] * norm_usage_cost
+
+        current_prompt = self._get_current_prompt()
+        sensitivity_result = self.privacy_manager.analyze_query(current_prompt)
+        security_score = self.privacy_manager.get_security_score(current_prompt, action)
+        privacy_risk = self.privacy_manager.calculate_privacy_risk(
+            sensitivity_result, offload_to_cloud=(action > 0)
+        )
+
+        w_security = self.weights[4] if len(self.weights) > 4 else 0.0
+        if self.privacy_manager.budget and self.privacy_manager.budget.epsilon > 0:
+            budget_ratio = self.privacy_manager.budget.remaining / self.privacy_manager.budget.epsilon
+            budget_ratio = min(max(budget_ratio, 0.0), 1.0)
+        else:
+            budget_ratio = 1.0
+        budget_bonus = 0.1 * budget_ratio
+
+        reward = (self.weights[0] * response_score 
+                + self.weights[1] * association_score 
+                - self.weights[2] * norm_latency_cost 
+                - self.weights[3] * norm_usage_cost
+                + w_security * security_score
+                - w_security * privacy_risk
+                + budget_bonus)
 
         self.current_step += 1
         done = self.current_step >= len(self.current_states)
-        next_state = np.array(list(state[5:]) + real_action + self.current_states[self.current_step][-1:], dtype=int) if not done else np.zeros(5*self.time_span) - 1
+        if not done:
+            next_base = np.array(list(state_base[5:]) + real_action + self.current_states[self.current_step][-1:], dtype=int)
+            next_prompt = self._get_current_prompt()
+            next_sensitivity = self.privacy_manager.analyze_query(next_prompt)
+            next_state = self._augment_state(next_base, next_sensitivity)
+        else:
+            next_state = np.zeros(self.base_state_dim + (self.privacy_feature_dim if self.enable_privacy_features else 0)) - 1
         return next_state, response_score, association_score, total_latency, total_usage, reward, done
 
 

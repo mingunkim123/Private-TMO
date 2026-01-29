@@ -20,6 +20,27 @@ args = args_parser()
 
 constraint_lambda = args.constraint_lambda
 
+def _privacy_excess_for_obs(obs, action, env):
+    if not hasattr(env, "sensitivity_score_idx"):
+        return 0.0
+    try:
+        sensitivity_score = obs[env.sensitivity_score_idx].item()
+    except Exception:
+        sensitivity_score = 0.0
+    try:
+        action_value = action.item()
+    except Exception:
+        action_value = int(action)
+    if action_value == 0:
+        return 0.0
+    budget_ratio = 1.0
+    if hasattr(env, "budget_ratio_idx") and obs.shape[0] > env.budget_ratio_idx:
+        try:
+            budget_ratio = obs[env.budget_ratio_idx].item()
+        except Exception:
+            budget_ratio = 1.0
+    return max(0.0, sensitivity_score - budget_ratio)
+
 SelfPPO = TypeVar("SelfPPO", bound="PPO")
         
 class RC_PPO(OnPolicyAlgorithm):
@@ -108,7 +129,7 @@ class RC_PPO(OnPolicyAlgorithm):
 
     def resource_constraint(self, rollout_data):
         action_to_modality_indices = {0: [], 1: [], 2: [0], 3: [1], 4: [2], 5: [0, 1], 6: [0, 2], 7: [1, 2], 8: [0, 1, 2]}
-        excess_latency = []; excess_usage = []
+        excess_latency = []; excess_usage = []; excess_privacy = []
         for obs, action in zip(rollout_data.observations, rollout_data.actions):
             total_latency = 0; total_usage = 0
             for i in range(self.M4A1_Env.time_span):
@@ -130,8 +151,12 @@ class RC_PPO(OnPolicyAlgorithm):
             
             excess_latency.append(max(0, total_latency - self.M4A1_Env.latency_budget))
             excess_usage.append(max(0, total_usage - self.M4A1_Env.usage_budget) * 1000)
+            excess_privacy.append(_privacy_excess_for_obs(obs, action, self.M4A1_Env))
 
-        penalty = -(torch.tensor(excess_latency).float().mean() + torch.tensor(excess_usage).float().mean())
+        privacy_weight = max(getattr(args, "beta_security", 0.0), 0.0)
+        penalty = -(torch.tensor(excess_latency).float().mean()
+                    + torch.tensor(excess_usage).float().mean()
+                    + privacy_weight * torch.tensor(excess_privacy).float().mean())
         return penalty
     
     def _setup_model(self) -> None:
@@ -322,7 +347,7 @@ class RC_A2C(OnPolicyAlgorithm):
 
     def resource_constraint(self, rollout_data):
         action_to_modality_indices = {0: [], 1: [], 2: [0], 3: [1], 4: [2], 5: [0, 1], 6: [0, 2], 7: [1, 2], 8: [0, 1, 2]}
-        excess_latency = []; excess_usage = []
+        excess_latency = []; excess_usage = []; excess_privacy = []
         for obs, action in zip(rollout_data.observations, rollout_data.actions):
             total_latency = 0; total_usage = 0
             for i in range(self.M4A1_Env.time_span):
@@ -344,8 +369,12 @@ class RC_A2C(OnPolicyAlgorithm):
             
             excess_latency.append(max(0, total_latency - self.M4A1_Env.latency_budget))
             excess_usage.append(max(0, total_usage - self.M4A1_Env.usage_budget) * 1000)
+            excess_privacy.append(_privacy_excess_for_obs(obs, action, self.M4A1_Env))
 
-        penalty = -(torch.tensor(excess_latency).float().mean() + torch.tensor(excess_usage).float().mean())
+        privacy_weight = max(getattr(args, "beta_security", 0.0), 0.0)
+        penalty = -(torch.tensor(excess_latency).float().mean()
+                    + torch.tensor(excess_usage).float().mean()
+                    + privacy_weight * torch.tensor(excess_privacy).float().mean())
         return penalty
 
     def train(self) -> None:
@@ -490,7 +519,7 @@ class RC_DQN(OffPolicyAlgorithm):
 
     def resource_constraint(self, rollout_data):
         action_to_modality_indices = {0: [], 1: [], 2: [0], 3: [1], 4: [2], 5: [0, 1], 6: [0, 2], 7: [1, 2], 8: [0, 1, 2]}
-        excess_latency = []; excess_usage = []
+        excess_latency = []; excess_usage = []; excess_privacy = []
         for obs, action in zip(rollout_data.observations, rollout_data.actions):
             total_latency = 0; total_usage = 0
             for i in range(self.M4A1_Env.time_span):
@@ -512,8 +541,12 @@ class RC_DQN(OffPolicyAlgorithm):
             
             excess_latency.append(max(0, total_latency - self.M4A1_Env.latency_budget))
             excess_usage.append(max(0, total_usage - self.M4A1_Env.usage_budget) * 1000)
+            excess_privacy.append(_privacy_excess_for_obs(obs, action, self.M4A1_Env))
 
-        penalty = -(torch.tensor(excess_latency).float().mean() + torch.tensor(excess_usage).float().mean())
+        privacy_weight = max(getattr(args, "beta_security", 0.0), 0.0)
+        penalty = -(torch.tensor(excess_latency).float().mean()
+                    + torch.tensor(excess_usage).float().mean()
+                    + privacy_weight * torch.tensor(excess_privacy).float().mean())
         return penalty
 
     def _setup_model(self) -> None:

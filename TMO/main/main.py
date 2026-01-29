@@ -26,6 +26,7 @@ if __name__ == '__main__':
     weights = [args.alpha, args.beta_association, args.beta_latency, args.beta_usage, args.beta_security]
     latency_budget = args.latency_budget  # 지연시간 예산 (제약조건)
     usage_budget = args.usage_budget      # 사용량 예산 (제약조건)
+    privacy_budget = args.privacy_budget  # 프라이버시 예산 (제약조건)
     local_device = args.local_device      # 로컬 디바이스 스펙
     cloud_server = args.cloud_server      # 클라우드 서버 스펙
 
@@ -42,6 +43,9 @@ if __name__ == '__main__':
     models = {'Random': None, 'Local': None, 'Cloud': None, 
             'PPO': PPO, 'A2C': A2C, 'DQN': DQN,
             'RC_PPO': RC_PPO, 'RC_A2C': RC_A2C, 'RC_DQN': RC_DQN}
+    if args.use_privacy_rl:
+        from privacy_tmo import PrivacyAwareEnv, PrivacyConstrainedPPO
+        models['PRC_PPO'] = PrivacyConstrainedPPO
     
     results = {} # 결과 저장용 딕셔너리
     Train = {}   # 학습 관련 데이터 저장용
@@ -54,13 +58,17 @@ if __name__ == '__main__':
         # 자원 제약 조건별로 실험 수행
         for resource_constraint in Resource_Constraints:
             # 학습 환경 생성
-            train_env = M4A1_Env(train_dataset, weights, local_device, cloud_server, latency_budget, usage_budget, resource_constraint, time_span, Train=True)
+            train_env = M4A1_Env(train_dataset, weights, local_device, cloud_server, latency_budget, usage_budget, privacy_budget, resource_constraint, time_span, Train=True)
+            if args.use_privacy_rl:
+                train_env = PrivacyAwareEnv(train_env)
             
             # 학습 환경의 보상 및 신경망 정보 저장 (테스트 환경에서 참조용)
             Train['rewards'] = train_env.rewards; Train['nn'] = train_env.nn
             
             # 테스트 환경 생성
-            test_env = M4A1_Env(test_dataset, weights, local_device, cloud_server, latency_budget, usage_budget, resource_constraint, time_span, Train)
+            test_env = M4A1_Env(test_dataset, weights, local_device, cloud_server, latency_budget, usage_budget, privacy_budget, resource_constraint, time_span, Train)
+            if args.use_privacy_rl:
+                test_env = PrivacyAwareEnv(test_env)
             
             # 각 모델별로 학습 및 평가 수행
             for model_name, model_cls in models.items():
