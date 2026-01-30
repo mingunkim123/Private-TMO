@@ -1,95 +1,227 @@
+<div align="center">
+
 # Privacy-TMO
 
 **Privacy-Preserving Personalized LLM Offloading for Edge-Cloud Collaboration**
 
 [![Python 3.10](https://img.shields.io/badge/Python-3.10-blue.svg)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.2+-ee4c2c.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> 기존 [TMO (MobiHoc 2025)](./TMO/README.md) 프레임워크를 확장하여 **프라이버시 보호**, **온디바이스 개인화**, **멀티모달 모달리티 선택**을 통합한 Edge-Cloud LLM 오프로딩 시스템
+*Extending [TMO (MobiHoc 2025 Best Paper Runner-Up)](./TMO/README.md) with privacy protection, on-device personalization, and multimodal sensitivity-aware offloading*
+
+</div>
 
 ---
 
-## 개요
+## Overview
 
-Privacy-TMO는 **텍스트 + 이미지 모달리티**가 포함된 멀티모달 질의에서, 품질·지연·비용과 함께 **프라이버시 리스크**까지 최적화하는 오프로딩 프레임워크입니다.  
-기존 TMO의 “어떤 모달리티 조합을 클라우드로 보낼 것인가(액션 0–8)”를 유지하면서 **모달리티 민감도**를 보상에 반영합니다.
+Privacy-TMO optimizes **quality, latency, cost, and privacy** simultaneously for multimodal LLM inference.  
+The RL agent learns to select the optimal modality combination (action 0–8) while minimizing privacy leakage.
+
+### Key Contributions
+
+| Contribution | Description |
+|--------------|-------------|
+| **On-Device LoRA** | QLoRA-based personalization; user data never leaves the device |
+| **Sensitivity Classification** | 3-level text classification (Public / Semi-sensitive / Private) |
+| **Multimodal Privacy** | Per-image sensitivity analysis with modality-aware routing |
+| **Privacy Budget** | ε-differential privacy style constraint on cumulative risk |
 
 ---
 
-## 핵심 특징
+## System Architecture
 
-- **On-Device LoRA 개인화**: QLoRA 기반, 개인 데이터는 디바이스 밖으로 나가지 않음
-- **민감도 기반 선택적 오프로딩**: 텍스트 민감도 + 쿼리 분해
-- **멀티모달 프라이버시 통합**: 이미지 모달리티 민감도 분석 + RL 보상 반영
-- **Privacy Budget 제약**: ε-budget 기반의 프라이버시 리스크 누적 관리
-
----
-
-## 시스템 아키텍처
-
-```mermaid
-flowchart TB
-    UserQuery[UserQuery]
-    Images[Images]
-    SensText[TextSensitivity]
-    SensImage[ImageSensitivity]
-    ModalityRisk[ModalityRisk]
-    RLAction[RLAction_0_8]
-    LocalLLM[LocalLLM]
-    CloudLLM[CloudLLM]
-    Aggregate[Aggregate]
-    Reward[Reward]
-
-    UserQuery --> SensText
-    Images --> SensImage
-    SensText --> Reward
-    SensImage --> ModalityRisk
-    ModalityRisk --> Reward
-    RLAction --> LocalLLM
-    RLAction --> CloudLLM
-    LocalLLM --> Aggregate
-    CloudLLM --> Aggregate
-    Aggregate --> Reward
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              User Query + Images                            │
+└─────────────────────────────────────┬───────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Sensitivity Analysis                                │
+│  ┌─────────────────────┐    ┌─────────────────────────────────────────┐    │
+│  │   Text Classifier   │    │         Image Classifier (×3)          │    │
+│  │  Rule + NER + ML    │    │   Face Detection / OCR / Simulation    │    │
+│  │                     │    │                                         │    │
+│  │  PUBLIC | SEMI |    │    │   img0: 0.4   img1: 0.2   img2: 0.7    │    │
+│  │       PRIVATE       │    │                                         │    │
+│  └──────────┬──────────┘    └──────────────────┬──────────────────────┘    │
+│             │                                  │                            │
+│             └──────────────┬───────────────────┘                            │
+│                            ▼                                                │
+│              ┌─────────────────────────┐                                    │
+│              │   Multimodal Sensitivity │                                   │
+│              │   + Modality Risk Calc   │                                   │
+│              └─────────────┬───────────┘                                    │
+└────────────────────────────┼────────────────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          RL Agent (RC_PPO/A2C/DQN)                          │
+│                                                                             │
+│   State: [history] + [text_sens, text_score, budget] + [img0, img1, img2]  │
+│                                                                             │
+│   Action: 0 (Local) | 1-8 (Cloud + Modality Combinations)                  │
+└─────────────────────────────────────┬───────────────────────────────────────┘
+                                      │
+                    ┌─────────────────┴─────────────────┐
+                    ▼                                   ▼
+          ┌─────────────────┐                 ┌─────────────────┐
+          │   Local LLM     │                 │   Cloud LLM     │
+          │  (Ollama+LoRA)  │                 │   (Groq API)    │
+          └────────┬────────┘                 └────────┬────────┘
+                   │                                   │
+                   └─────────────┬─────────────────────┘
+                                 ▼
+                    ┌─────────────────────────┐
+                    │  Response Aggregation   │
+                    └─────────────┬───────────┘
+                                  │
+                                  ▼
+                    ┌─────────────────────────┐
+                    │      Reward Calc        │
+                    │  Quality + Association  │
+                    │  - Latency - Cost       │
+                    │  - TextRisk             │
+                    │  - ModalityRisk         │
+                    │  + BudgetBonus          │
+                    └─────────────────────────┘
 ```
 
 ---
 
-## 데이터 플로우 (요약)
+## Data Flow (Detailed)
 
-1. **초기화**  
-   `options.py` → `M4A1_Env` 생성 → `PrivacyManager`/`QueryDecomposer`/`ResponseAggregator` 초기화  
-   관측값에 **텍스트 민감도 + 이미지 민감도**가 포함됨
+### 1. Initialization
 
-2. **학습 루프 (각 Step)**  
-   `M4A1_Env.step()`에서:
-   - 프롬프트 추출 및 텍스트 민감도 분석
-   - 이미지 민감도 분석(실제/시뮬레이션)
-   - 선택된 액션(0–8)에 따른 모달리티 리스크 계산
-   - 로컬/클라우드/하이브리드 추론 수행
-   - 보상 계산: 품질 + 연관성 − 지연 − 비용 − **텍스트 리스크** − **모달리티 리스크**
+```
+main.py
+├── args_parser()
+│   └── options.py (load configuration)
+│
+├── M4A1_Env(dataset, weights, ...)
+│   ├── PrivacyManager(enable_ner, enable_ml, enable_image_sensitivity)
+│   │   ├── SensitivityClassifier
+│   │   └── ImageSensitivityClassifier (optional)
+│   │
+│   ├── QueryDecomposer(classifier)
+│   ├── ResponseAggregator()
+│   │
+│   └── observation_space
+│       └── base(5×time_span) + privacy(3) + image_sens(3)
+│           = 25 + 3 + 3 = 31 dimensions (default)
+│
+└── RL Model (RC_PPO / RC_A2C / RC_DQN)
+    └── MlpPolicy with resource_constraint()
+```
 
-3. **RL 업데이트**  
-   RC 모델의 제약 계산에 프라이버시 항이 반영됨
+### 2. Training Loop (Each Step)
+
+```
+RL Agent
+│
+├── model.predict(observation)
+│   └── action ∈ {0, 1, 2, ..., 8}
+│
+└── env.step(action)
+    │
+    ├── [1] Extract Prompt
+    │   └── _get_current_prompt()
+    │
+    ├── [2] Text Sensitivity Analysis
+    │   └── PrivacyManager.analyze_query(prompt)
+    │       └── SensitivityClassifier.classify()
+    │           ├── RuleBasedDetector (regex patterns)
+    │           ├── NERBasedDetector (BERT-based)
+    │           └── Weighted voting → SensitivityResult
+    │
+    ├── [3] Image Sensitivity Analysis (if enabled)
+    │   └── PrivacyManager.analyze_multimodal(text, images, simulate)
+    │       └── ImageSensitivityClassifier.classify_simulated()
+    │           └── Per-image sensitivity scores
+    │
+    ├── [4] Privacy Risk Calculation
+    │   ├── text_risk = calculate_privacy_risk(sensitivity, cloud)
+    │   └── modality_risk = calculate_modality_privacy_risk(mm_sens, action)
+    │
+    ├── [5] Inference Execution
+    │   │
+    │   ├── action == 0 (Local Only)
+    │   │   └── tmo_interface.get_local_inference(prompt)
+    │   │       └── LoRAManager.select_adapter()
+    │   │           └── Ollama (llama3.2:3b)
+    │   │
+    │   └── action > 0 (Cloud / Hybrid)
+    │       ├── QueryDecomposer.decompose(prompt)
+    │       │   └── Strategy: sentence / entity / clause / auto
+    │       │
+    │       ├── [Hybrid] if has_sensitive:
+    │       │   ├── get_local_inference(local_query)
+    │       │   ├── get_cloud_inference(cloud_query)
+    │       │   └── ResponseAggregator.aggregate()
+    │       │
+    │       └── [Cloud Only] else:
+    │           └── get_cloud_inference(prompt)
+    │               └── Groq API (llama-3.3-70b)
+    │
+    ├── [6] Privacy Budget Update
+    │   └── PrivacyBudget.consume(text_risk + modality_risk)
+    │       └── Track cumulative risk vs ε
+    │
+    ├── [7] Reward Calculation
+    │   │
+    │   │   R = α·Quality
+    │   │     + β₁·Association
+    │   │     - β₂·Latency
+    │   │     - β₃·Cost
+    │   │     + β₄·SecurityScore
+    │   │     - β₄·TextPrivacyRisk
+    │   │     - β₅·ModalityPrivacyRisk    ← NEW
+    │   │     + γ·BudgetBonus
+    │   │
+    │   └── subject to: Σₜ Risk(qₜ, aₜ) ≤ ε
+    │
+    └── [8] Next State Generation
+        └── _augment_state(base, text_sens, mm_sens)
+            └── [base_state, sens_level, sens_score, budget_ratio,
+                 img0_sens, img1_sens, img2_sens]
+```
+
+### 3. RL Model Training
+
+```
+RC_PPO.train()
+│
+├── Sample from rollout_buffer
+│
+├── resource_constraint(observations)
+│   ├── excess_latency = max(0, total_latency - budget)
+│   ├── excess_usage = max(0, total_usage - budget)
+│   └── excess_privacy = f(sensitivity, budget_ratio)    ← NEW
+│
+└── loss = policy_loss + value_loss + λ·constraint_penalty
+```
 
 ---
 
-## 멀티모달 오프로딩 액션 정의
+## Multimodal Action Space
 
-| 액션 | 설명 | 클라우드로 보내는 모달리티 |
-|------|------|----------------------------|
-| 0 | 로컬만 | 없음 |
-| 1 | 클라우드 (텍스트만) | 텍스트 |
-| 2 | 클라우드 + 이미지0 | 텍스트 + 이미지0 |
-| 3 | 클라우드 + 이미지1 | 텍스트 + 이미지1 |
-| 4 | 클라우드 + 이미지2 | 텍스트 + 이미지2 |
-| 5 | 클라우드 + 이미지0,1 | 텍스트 + 이미지0 + 이미지1 |
-| 6 | 클라우드 + 이미지0,2 | 텍스트 + 이미지0 + 이미지2 |
-| 7 | 클라우드 + 이미지1,2 | 텍스트 + 이미지1 + 이미지2 |
-| 8 | 클라우드 + 전체 | 텍스트 + 이미지0 + 이미지1 + 이미지2 |
+| Action | Description | Modalities to Cloud | Privacy Risk |
+|:------:|-------------|---------------------|--------------|
+| 0 | Local only | None | Zero |
+| 1 | Cloud (text) | Text | text_risk |
+| 2 | Cloud + img0 | Text + Image0 | text_risk + img0_risk |
+| 3 | Cloud + img1 | Text + Image1 | text_risk + img1_risk |
+| 4 | Cloud + img2 | Text + Image2 | text_risk + img2_risk |
+| 5 | Cloud + img0,1 | Text + Image0 + Image1 | text_risk + img0_risk + img1_risk |
+| 6 | Cloud + img0,2 | Text + Image0 + Image2 | text_risk + img0_risk + img2_risk |
+| 7 | Cloud + img1,2 | Text + Image1 + Image2 | text_risk + img1_risk + img2_risk |
+| 8 | Cloud + all | Text + All Images | text_risk + Σ img_risk |
 
 ---
 
-## 설치
+## Installation
 
 ```bash
 git clone https://github.com/your-repo/Privacy-TMO.git
@@ -97,80 +229,141 @@ cd Privacy-TMO
 pip install -r requirements.txt
 ```
 
+### Requirements
+
+- Python >= 3.10
+- PyTorch >= 2.2.0
+- stable-baselines3 >= 2.2.1
+- transformers >= 4.36.0
+- peft >= 0.7.0
+- opencv-python >= 4.8.0 (for image sensitivity)
+
 ---
 
-## 빠른 시작
+## Quick Start
 
-### 1) 학습 실행
+### Training with Privacy-Aware RL
+
 ```bash
 python TMO/main/main.py \
-  --use_privacy_rl \
   --privacy_budget 1.0 \
   --beta_security 0.3 \
   --beta_modality_privacy 0.2 \
-  --simulate_image_sensitivity
+  --simulate_image_sensitivity \
+  --use_privacy_rl
 ```
 
-### 2) 민감도 분석 예제
+### Sensitivity Analysis Example
+
 ```python
 from privacy_tmo import PrivacyManager
 
-pm = PrivacyManager()
-result = pm.analyze_query("My password is secret123. What is Python?")
-print(result.level, result.score)
+pm = PrivacyManager(enable_ner=False, enable_ml=False)
+
+# Text sensitivity
+result = pm.analyze_query("My password is secret123")
+print(f"Level: {result.level.name}, Score: {result.score:.2f}")
+# Output: Level: PRIVATE, Score: 0.95
+
+# Multimodal sensitivity
+mm = pm.analyze_multimodal(
+    text="Show me the kitchen",
+    simulate_image_sensitivity=True,
+    context={"task_cat": "Assistive System"}
+)
+print(f"Image sensitivities: {[mm.images[i].score for i in [0,1,2]]}")
 ```
 
 ---
 
-## 주요 CLI 옵션
+## CLI Options
 
-- `--beta_security`: 텍스트 프라이버시 리스크 가중치  
-- `--beta_modality_privacy`: 이미지 모달리티 리스크 가중치  
-- `--use_image_sensitivity`: 실제 이미지 민감도 분석 (OpenCV 필요)  
-- `--simulate_image_sensitivity`: 이미지 없이 민감도 시뮬레이션  
-- `--privacy_budget`: 프라이버시 예산 ε  
-- `--use_privacy_rl`: PrivacyConstrainedPPO 사용  
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--privacy_budget` | 1.0 | Privacy budget ε |
+| `--beta_security` | 0.0 | Text privacy risk weight |
+| `--beta_modality_privacy` | 0.2 | Image modality risk weight |
+| `--use_image_sensitivity` | False | Enable real image analysis (OpenCV) |
+| `--simulate_image_sensitivity` | False | Simulate image sensitivity |
+| `--use_privacy_rl` | False | Use PrivacyConstrainedPPO |
 
 ---
 
-## 프로젝트 구조
+## Project Structure
 
 ```
 Privacy-TMO/
-├── privacy_tmo/
-│   ├── image_sensitivity.py        # 이미지 민감도 분석
-│   ├── sensitivity_classifier.py   # 텍스트/멀티모달 민감도 분류
-│   ├── privacy_manager.py          # 프라이버시 리스크/예산 관리
-│   ├── query_decomposer.py         # 쿼리 분해 + 멀티모달 라우팅
-│   ├── response_aggregator.py      # 응답 통합
-│   ├── privacy_rl.py               # Privacy-aware RL
-│   ├── benchmark.py                # 벤치마크 실험
-│   ├── privacy_attacks.py          # 공격 시뮬레이션
-│   └── profiler.py                 # Jetson 프로파일링
-├── tmo_interface.py                # 로컬/클라우드 추론 인터페이스
-├── lora_manager.py                 # LoRA 어댑터 관리
+│
+├── privacy_tmo/                        # Core privacy module
+│   ├── config.py                       # Configuration management
+│   ├── sensitivity_classifier.py      # Text sensitivity (Rule+NER+ML)
+│   ├── image_sensitivity.py            # Image sensitivity (Face/OCR/Sim)
+│   ├── privacy_manager.py              # Central privacy orchestrator
+│   ├── query_decomposer.py             # Query decomposition strategies
+│   ├── response_aggregator.py          # Hybrid response merging
+│   ├── privacy_rl.py                   # PrivacyAwareEnv, ConstrainedPPO
+│   ├── lora_trainer.py                 # On-device LoRA training
+│   ├── privacy_attacks.py              # Canary, MIA simulations
+│   ├── benchmark.py                    # Evaluation suite
+│   └── profiler.py                     # Jetson performance profiling
+│
+├── tmo_interface.py                    # Ollama (local) + Groq (cloud)
+├── lora_manager.py                     # Hierarchical LoRA adapters
 ├── requirements.txt
-└── TMO/
+│
+└── TMO/                                # Original TMO framework
+    ├── dataset/M4A1.json               # M4AI multimodal dataset
     └── main/
-        ├── main.py                 # 학습 진입점
-        ├── models.py               # RC_PPO/A2C/DQN
-        └── utils.py                # M4A1 환경
+        ├── main.py                     # Entry point
+        ├── models.py                   # RC_PPO, RC_A2C, RC_DQN
+        ├── utils.py                    # M4A1_Env with privacy integration
+        └── options.py                  # CLI argument parser
 ```
 
 ---
 
-## 실험 및 평가
+## Technical Details
 
-- **Privacy Attack Simulation**: Canary Insertion, Membership Inference  
-- **Benchmarking**: No Protection / Local Only / Threshold 기반 비교  
-- **Jetson Profiling**: 지연, 전력, 메모리 측정  
+### Reward Function
+
+**Original TMO:**
+```
+R = α·Quality + β₁·Association - β₂·Latency - β₃·Cost
+```
+
+**Privacy-TMO (Extended):**
+```
+R = α·Quality + β₁·Association - β₂·Latency - β₃·Cost
+    + β₄·SecurityScore
+    - β₄·TextPrivacyRisk
+    - β₅·ModalityPrivacyRisk
+    + γ·BudgetBonus
+
+subject to: Σₜ PrivacyRisk(qₜ, aₜ) ≤ ε
+```
+
+### Sensitivity Levels
+
+| Level | Score Range | Cloud Policy | Example |
+|-------|-------------|--------------|---------|
+| PUBLIC | 0.0 - 0.3 | Allowed | "What is Python?" |
+| SEMI_SENSITIVE | 0.3 - 0.7 | Hybrid | "Schedule meeting with John" |
+| PRIVATE | 0.7 - 1.0 | Local Only | "My password is secret123" |
+
+---
+
+## Evaluation
+
+- **Privacy Attack Simulation**: Canary insertion, Membership inference attack
+- **Baseline Comparison**: No Protection, Local Only, Threshold-based
+- **Jetson Profiling**: Latency, memory, power consumption on edge devices
 
 ---
 
 ## Citation
 
 ```bibtex
-@article{privacy-tmo,
+@article{privacy-tmo-2025,
   title={Privacy-Preserving Personalized LLM Offloading for Edge-Cloud Collaboration},
   author={},
   year={2025}
