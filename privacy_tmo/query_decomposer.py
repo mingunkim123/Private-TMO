@@ -10,7 +10,7 @@ This enables fine-grained privacy control beyond binary decisions.
 """
 
 import re
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -19,6 +19,9 @@ from .sensitivity_classifier import (
     SensitivityLevel, 
     SensitivityResult
 )
+
+if TYPE_CHECKING:
+    from .privacy_manager import MultimodalSensitivity
 
 
 class QueryPartType(Enum):
@@ -547,6 +550,61 @@ class SelectiveOffloader:
             'local_query': decomposed.local_query,
             'cloud_query': decomposed.cloud_query,
         }
+
+
+@dataclass
+class MultimodalDecomposedQuery:
+    """Decomposed query with modality routing decisions"""
+    text_decomposition: DecomposedQuery
+    modality_routing: Dict[int, str]  # {0: "local", 1: "cloud", ...}
+    local_modalities: List[int]
+    cloud_modalities: List[int]
+
+
+class MultimodalQueryDecomposer:
+    """
+    Multimodal query decomposer that adds modality routing.
+    
+    - Text is decomposed using existing QueryDecomposer
+    - Image modalities are routed based on per-image sensitivity
+    """
+    
+    def __init__(
+        self,
+        text_decomposer: Optional[QueryDecomposer] = None,
+        image_risk_threshold: float = 0.5,
+    ):
+        self.text_decomposer = text_decomposer or QueryDecomposer()
+        self.image_risk_threshold = image_risk_threshold
+    
+    def decompose(
+        self,
+        query: str,
+        mm_sensitivity: Optional["MultimodalSensitivity"] = None,
+        strategy: str = "auto",
+    ) -> MultimodalDecomposedQuery:
+        text_decomp = self.text_decomposer.decompose(query, strategy=strategy)
+        modality_routing: Dict[int, str] = {}
+        
+        if mm_sensitivity and mm_sensitivity.images:
+            for idx, result in mm_sensitivity.images.items():
+                if result.level == SensitivityLevel.PRIVATE or result.score >= self.image_risk_threshold:
+                    modality_routing[idx] = "local"
+                else:
+                    modality_routing[idx] = "cloud"
+        else:
+            # Default: allow all modalities to cloud if no sensitivity info
+            modality_routing = {0: "cloud", 1: "cloud", 2: "cloud"}
+        
+        local_modalities = [i for i, v in modality_routing.items() if v == "local"]
+        cloud_modalities = [i for i, v in modality_routing.items() if v == "cloud"]
+        
+        return MultimodalDecomposedQuery(
+            text_decomposition=text_decomp,
+            modality_routing=modality_routing,
+            local_modalities=local_modalities,
+            cloud_modalities=cloud_modalities,
+        )
 
 
 if __name__ == "__main__":

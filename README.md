@@ -5,323 +5,165 @@
 [![Python 3.10](https://img.shields.io/badge/Python-3.10-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> 기존 [TMO (MobiHoc 2025)](./TMO/README.md) 프레임워크를 확장하여, **프라이버시 보호**와 **On-Device 개인화**를 추가한 Edge-Cloud LLM 오프로딩 시스템
+> 기존 [TMO (MobiHoc 2025)](./TMO/README.md) 프레임워크를 확장하여 **프라이버시 보호**, **온디바이스 개인화**, **멀티모달 모달리티 선택**을 통합한 Edge-Cloud LLM 오프로딩 시스템
 
 ---
 
-## Overview
+## 개요
 
-Privacy-TMO는 민감한 사용자 데이터를 보호하면서 고품질 LLM 응답을 제공합니다.
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        User Query                               │
-│           "My password is secret123. What is Python?"           │
-└─────────────────────────────┬───────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                  Sensitivity Classifier                         │
-│                 (Rule + NER + ML Hybrid)                        │
-│                                                                 │
-│    🟢 PUBLIC    🟡 SEMI-SENSITIVE    🔴 PRIVATE                │
-└─────────────────────────────┬───────────────────────────────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-        ┌──────────┐   ┌──────────────┐   ┌──────────┐
-        │  Cloud   │   │   Hybrid     │   │  Local   │
-        │   LLM    │   │ (Selective)  │   │   LLM    │
-        └──────────┘   └──────────────┘   └──────────┘
-              │               │               │
-              └───────────────┼───────────────┘
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                  Response Aggregation                           │
-│              Privacy-Preserving Final Output                    │
-└─────────────────────────────────────────────────────────────────┘
-```
+Privacy-TMO는 **텍스트 + 이미지 모달리티**가 포함된 멀티모달 질의에서, 품질·지연·비용과 함께 **프라이버시 리스크**까지 최적화하는 오프로딩 프레임워크입니다.  
+기존 TMO의 “어떤 모달리티 조합을 클라우드로 보낼 것인가(액션 0–8)”를 유지하면서 **모달리티 민감도**를 보상에 반영합니다.
 
 ---
 
-## Data Flow Summary
+## 핵심 특징
 
-```
-4. 데이터 흐름 요약
-┌─────────────────────────────────────────────────────────────────┐
-│                    전체 데이터 플로우                            │
-└─────────────────────────────────────────────────────────────────┘
+- **On-Device LoRA 개인화**: QLoRA 기반, 개인 데이터는 디바이스 밖으로 나가지 않음
+- **민감도 기반 선택적 오프로딩**: 텍스트 민감도 + 쿼리 분해
+- **멀티모달 프라이버시 통합**: 이미지 모달리티 민감도 분석 + RL 보상 반영
+- **Privacy Budget 제약**: ε-budget 기반의 프라이버시 리스크 누적 관리
 
-1. 초기화 단계
-   main.py
-   ├─> args_parser() → options.py (설정 로드)
-   ├─> M4A1_Env 생성
-   │   ├─> PrivacyManager 초기화
-   │   ├─> QueryDecomposer 초기화
-   │   ├─> ResponseAggregator 초기화
-   │   └─> observation_space 확장 (+3 차원)
-   └─> RL 모델 생성 (RC_PPO/A2C/DQN)
+---
 
-2. 학습 루프 (각 Step)
-   RL Agent
-   ├─> predict(observation) → action 선택
-   │   └─> M4A1_Env.step(action)
-   │       ├─> [1] 프롬프트 추출
-   │       │   └─> _get_current_prompt()
-   │       ├─> [2] 민감도 분석
-   │       │   └─> PrivacyManager.analyze_query()
-   │       │       └─> SensitivityClassifier.classify()
-   │       │           ├─> RuleBasedDetector (정규식)
-   │       │           ├─> NERBasedDetector (BERT)
-   │       │           └─> 가중치 투표
-   │       ├─> [3] 보안 점수 & Privacy Risk
-   │       │   ├─> PrivacyManager.get_security_score()
-   │       │   └─> PrivacyManager.calculate_privacy_risk()
-   │       ├─> [4] 추론 실행
-   │       │   ├─> action == 0: 로컬만
-   │       │   │   └─> tmo_interface.get_local_inference()
-   │       │   │       └─> LoRAManager.select_adapter()
-   │       │   │           └─> Ollama (로컬 LLM)
-   │       │   └─> action > 0: 클라우드/하이브리드
-   │       │       ├─> QueryDecomposer.decompose()
-   │       │       │   └─> Sentence/Entity/Clause 전략
-   │       │       ├─> 하이브리드인 경우:
-   │       │       │   ├─> tmo_interface.get_local_inference(local_query)
-   │       │       │   ├─> tmo_interface.get_cloud_inference(cloud_query)
-   │       │       │   └─> ResponseAggregator.aggregate()
-   │       │       └─> 순수 클라우드인 경우:
-   │       │           └─> tmo_interface.get_cloud_inference()
-   │       │               └─> Groq API (클라우드 LLM)
-   │       ├─> [5] Privacy Budget 업데이트
-   │       │   └─> PrivacyBudget.consume(privacy_risk)
-   │       ├─> [6] 보상 계산
-   │       │   └─> 확장된 보상 함수 (Privacy Risk 포함)
-   │       └─> [7] 다음 상태 생성
-   │           └─> _augment_state() (프라이버시 특징 포함)
+## 시스템 아키텍처
 
-3. RL 모델 학습
-   RC_PPO.train()
-   ├─> rollout_buffer에서 데이터 샘플링
-   ├─> resource_constraint() 호출
-   │   ├─> excess_latency 계산
-   │   ├─> excess_usage 계산
-   │   └─> excess_privacy 계산 ← 새로 추가
-   │       └─> observation에서 민감도/예산 정보 추출
-   └─> loss에 privacy penalty 추가
+```mermaid
+flowchart TB
+    UserQuery[UserQuery]
+    Images[Images]
+    SensText[TextSensitivity]
+    SensImage[ImageSensitivity]
+    ModalityRisk[ModalityRisk]
+    RLAction[RLAction_0_8]
+    LocalLLM[LocalLLM]
+    CloudLLM[CloudLLM]
+    Aggregate[Aggregate]
+    Reward[Reward]
+
+    UserQuery --> SensText
+    Images --> SensImage
+    SensText --> Reward
+    SensImage --> ModalityRisk
+    ModalityRisk --> Reward
+    RLAction --> LocalLLM
+    RLAction --> CloudLLM
+    LocalLLM --> Aggregate
+    CloudLLM --> Aggregate
+    Aggregate --> Reward
 ```
 
 ---
 
-## Key Features
+## 데이터 플로우 (요약)
 
-### 1. On-Device LoRA Personalization
-- **QLoRA (4-bit)** 양자화로 Jetson 8GB에서 학습 가능
-- 개인 데이터는 **절대로 디바이스를 떠나지 않음**
-- Personal / Group / General 계층적 어댑터 관리
+1. **초기화**  
+   `options.py` → `M4A1_Env` 생성 → `PrivacyManager`/`QueryDecomposer`/`ResponseAggregator` 초기화  
+   관측값에 **텍스트 민감도 + 이미지 민감도**가 포함됨
 
-### 2. Sensitivity-Aware Selective Offloading
-- **3단계 민감도 분류**: Public / Semi-sensitive / Private
-- **쿼리 분해**: 민감한 부분만 로컬에서 처리
-- **Partial Offloading**: Binary 결정이 아닌 세밀한 제어
+2. **학습 루프 (각 Step)**  
+   `M4A1_Env.step()`에서:
+   - 프롬프트 추출 및 텍스트 민감도 분석
+   - 이미지 민감도 분석(실제/시뮬레이션)
+   - 선택된 액션(0–8)에 따른 모달리티 리스크 계산
+   - 로컬/클라우드/하이브리드 추론 수행
+   - 보상 계산: 품질 + 연관성 − 지연 − 비용 − **텍스트 리스크** − **모달리티 리스크**
 
-### 3. Privacy-Aware Reinforcement Learning
-- **확장된 보상 함수**: 기존 TMO + Privacy Risk 패널티
-- **Privacy Budget**: ε-differential privacy 스타일 제약
-- **Lagrangian Relaxation**으로 제약 조건 처리
-
-### 4. Comprehensive Evaluation
-- **Privacy Attack Simulation**: Canary Insertion, Membership Inference
-- **Baseline Comparison**: No Protection, Local Only, Threshold-based
-- **Jetson Profiling**: 지연시간, 메모리, 전력 측정
+3. **RL 업데이트**  
+   RC 모델의 제약 계산에 프라이버시 항이 반영됨
 
 ---
 
-## Installation
+## 멀티모달 오프로딩 액션 정의
+
+| 액션 | 설명 | 클라우드로 보내는 모달리티 |
+|------|------|----------------------------|
+| 0 | 로컬만 | 없음 |
+| 1 | 클라우드 (텍스트만) | 텍스트 |
+| 2 | 클라우드 + 이미지0 | 텍스트 + 이미지0 |
+| 3 | 클라우드 + 이미지1 | 텍스트 + 이미지1 |
+| 4 | 클라우드 + 이미지2 | 텍스트 + 이미지2 |
+| 5 | 클라우드 + 이미지0,1 | 텍스트 + 이미지0 + 이미지1 |
+| 6 | 클라우드 + 이미지0,2 | 텍스트 + 이미지0 + 이미지2 |
+| 7 | 클라우드 + 이미지1,2 | 텍스트 + 이미지1 + 이미지2 |
+| 8 | 클라우드 + 전체 | 텍스트 + 이미지0 + 이미지1 + 이미지2 |
+
+---
+
+## 설치
 
 ```bash
-# Clone repository
 git clone https://github.com/your-repo/Privacy-TMO.git
 cd Privacy-TMO
-
-# Install dependencies
 pip install -r requirements.txt
-
-# (Optional) For Jetson deployment
-pip install pynvml  # GPU monitoring
 ```
-
-### Requirements
-- Python >= 3.10
-- PyTorch >= 2.2.0
-- Transformers >= 4.36.0
-- PEFT >= 0.7.0 (for LoRA)
-- stable-baselines3 >= 2.2.1
 
 ---
 
-## Project Structure
+## 빠른 시작
+
+### 1) 학습 실행
+```bash
+python TMO/main/main.py \
+  --use_privacy_rl \
+  --privacy_budget 1.0 \
+  --beta_security 0.3 \
+  --beta_modality_privacy 0.2 \
+  --simulate_image_sensitivity
+```
+
+### 2) 민감도 분석 예제
+```python
+from privacy_tmo import PrivacyManager
+
+pm = PrivacyManager()
+result = pm.analyze_query("My password is secret123. What is Python?")
+print(result.level, result.score)
+```
+
+---
+
+## 주요 CLI 옵션
+
+- `--beta_security`: 텍스트 프라이버시 리스크 가중치  
+- `--beta_modality_privacy`: 이미지 모달리티 리스크 가중치  
+- `--use_image_sensitivity`: 실제 이미지 민감도 분석 (OpenCV 필요)  
+- `--simulate_image_sensitivity`: 이미지 없이 민감도 시뮬레이션  
+- `--privacy_budget`: 프라이버시 예산 ε  
+- `--use_privacy_rl`: PrivacyConstrainedPPO 사용  
+
+---
+
+## 프로젝트 구조
 
 ```
 Privacy-TMO/
-├── privacy_tmo/                    # Core module
-│   ├── config.py                   # Configuration management
-│   ├── lora_trainer.py             # On-device LoRA training (QLoRA)
-│   ├── sensitivity_classifier.py   # 3-level sensitivity classification
-│   ├── privacy_manager.py          # Privacy budget management
-│   ├── query_decomposer.py         # Query decomposition & selective offloading
-│   ├── privacy_rl.py               # Privacy-aware RL (extended reward)
-│   ├── response_aggregator.py      # Hybrid response aggregation
-│   ├── privacy_attacks.py          # Attack simulations (Canary, MIA)
-│   ├── benchmark.py                # Benchmarking suite
-│   └── profiler.py                 # Performance profiler
-│
-├── lora_manager.py                 # Hierarchical LoRA adapter manager
-├── tmo_interface.py                # Inference interface (Ollama + Groq)
-├── requirements.txt                # Dependencies
-│
-└── TMO/                            # Original TMO framework
+├── privacy_tmo/
+│   ├── image_sensitivity.py        # 이미지 민감도 분석
+│   ├── sensitivity_classifier.py   # 텍스트/멀티모달 민감도 분류
+│   ├── privacy_manager.py          # 프라이버시 리스크/예산 관리
+│   ├── query_decomposer.py         # 쿼리 분해 + 멀티모달 라우팅
+│   ├── response_aggregator.py      # 응답 통합
+│   ├── privacy_rl.py               # Privacy-aware RL
+│   ├── benchmark.py                # 벤치마크 실험
+│   ├── privacy_attacks.py          # 공격 시뮬레이션
+│   └── profiler.py                 # Jetson 프로파일링
+├── tmo_interface.py                # 로컬/클라우드 추론 인터페이스
+├── lora_manager.py                 # LoRA 어댑터 관리
+├── requirements.txt
+└── TMO/
     └── main/
-        ├── main.py                 # Training entry point
-        ├── models.py               # RC_PPO, RC_A2C, RC_DQN
-        └── utils.py                # M4A1 Environment
+        ├── main.py                 # 학습 진입점
+        ├── models.py               # RC_PPO/A2C/DQN
+        └── utils.py                # M4A1 환경
 ```
 
 ---
 
-## Quick Start
+## 실험 및 평가
 
-### 1. Basic Usage
-
-```python
-from privacy_tmo import (
-    PrivacyManager,
-    SensitivityClassifier,
-    QueryDecomposer,
-    HybridInferenceEngine
-)
-
-# Initialize components
-privacy_manager = PrivacyManager()
-classifier = SensitivityClassifier()
-
-# Classify query sensitivity
-query = "My password is secret123. What is Python?"
-result = classifier.classify(query)
-
-print(f"Level: {result.level.name}")  # SEMI_SENSITIVE
-print(f"Score: {result.score:.2f}")   # 0.75
-
-# Make offloading decision
-decision = privacy_manager.make_offloading_decision(query)
-print(f"Decision: {decision.decision.value}")  # hybrid
-```
-
-### 2. Train Personal LoRA
-
-```python
-from privacy_tmo import LoRATrainer, train_personal_lora
-
-# Quick training
-adapter_path = train_personal_lora(
-    user_data_path="./data/user_history.json",
-    output_dir="./lora_adapters/personal"
-)
-
-# Or with full control
-trainer = LoRATrainer()
-trainer.setup_model("meta-llama/Llama-3.2-3B")
-trainer.setup_lora(adapter_name="personal")
-trainer.prepare_dataset("./data/user_history.json")
-trainer.train()
-```
-
-### 3. Run Benchmark
-
-```python
-from privacy_tmo import BenchmarkSuite, BenchmarkConfig
-
-config = BenchmarkConfig(
-    num_episodes=100,
-    privacy_budgets=[0.3, 0.5, 0.7, 1.0]
-)
-
-suite = BenchmarkSuite(config)
-results = suite.run_benchmark()
-print(suite.generate_report())
-```
-
-### 4. Privacy Attack Evaluation
-
-```python
-from privacy_tmo import PrivacyAttackSimulator
-
-simulator = PrivacyAttackSimulator()
-
-# Prepare canary attack
-canaries = simulator.prepare_canary_attack(num_canaries=10)
-
-# Run attack
-result = simulator.run_canary_attack(inference_fn)
-print(f"Extraction rate: {result.success_rate:.2%}")
-```
-
----
-
-## Technical Contributions
-
-### Extended Reward Function
-
-**Original TMO:**
-```
-R = α·Quality + β₁·Association - β₂·Latency - β₃·Cost
-```
-
-**Privacy-TMO:**
-```
-R = α·Quality + β₁·Association - β₂·Latency - β₃·Cost 
-    - β₄·PrivacyRisk + γ·BudgetBonus
-
-subject to: Σₜ PrivacyRisk(qₜ, aₜ) ≤ ε
-```
-
-### Sensitivity Classification
-
-| Level | Description | Action |
-|-------|-------------|--------|
-| 🟢 PUBLIC | General knowledge queries | Cloud OK |
-| 🟡 SEMI-SENSITIVE | Context-dependent, some PII | Hybrid |
-| 🔴 PRIVATE | Contains passwords, SSN, etc. | Local Only |
-
-### Query Decomposition Strategies
-
-| Strategy | Use Case | Example |
-|----------|----------|---------|
-| Sentence | Multi-sentence queries | Split by sentence, route separately |
-| Entity | Clear PII entities | Mask entities, send masked version |
-| Clause | Complex single sentence | Split by clauses |
-
----
-
-## Benchmark Results
-
-```
-
-```
-
----
-
-## Hardware Requirements
-
-
-
----
-
-## References
-
-- **TMO**: Local-Cloud Inference Offloading for LLMs (MobiHoc 2025)
-- **FrugalGPT**: How to Use LLMs While Reducing Cost
-- **QLoRA**: Efficient Finetuning of Quantized LLMs
-- **PEFT**: Parameter-Efficient Fine-Tuning
+- **Privacy Attack Simulation**: Canary Insertion, Membership Inference  
+- **Benchmarking**: No Protection / Local Only / Threshold 기반 비교  
+- **Jetson Profiling**: 지연, 전력, 메모리 측정  
 
 ---
 

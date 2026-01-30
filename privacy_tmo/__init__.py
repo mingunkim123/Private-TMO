@@ -15,15 +15,25 @@ from .lora_trainer import LoRATrainer, train_personal_lora, train_group_lora
 from .sensitivity_classifier import (
     SensitivityClassifier, 
     SensitivityLevel, 
-    SensitivityResult
+    SensitivityResult,
+    MultimodalSensitivityClassifier,
+    MultimodalSensitivityResult,
 )
-from .privacy_manager import PrivacyManager, PrivacyBudget
+from .image_sensitivity import ImageSensitivityClassifier
+from .privacy_manager import (
+    PrivacyManager, 
+    PrivacyBudget, 
+    MultimodalSensitivity,
+    ACTION_TO_MODALITY_INDICES,
+)
 
 # Phase 2: Algorithms
 from .query_decomposer import (
     QueryDecomposer, 
     SelectiveOffloader, 
-    DecomposedQuery
+    DecomposedQuery,
+    MultimodalQueryDecomposer,
+    MultimodalDecomposedQuery,
 )
 from .privacy_rl import (
     PrivacyRLConfig, 
@@ -60,13 +70,20 @@ __all__ = [
     "SensitivityClassifier",
     "SensitivityLevel",
     "SensitivityResult",
+    "MultimodalSensitivityClassifier",
+    "MultimodalSensitivityResult",
+    "ImageSensitivityClassifier",
     "PrivacyManager",
     "PrivacyBudget",
+    "MultimodalSensitivity",
+    "ACTION_TO_MODALITY_INDICES",
     
     # Phase 2
     "QueryDecomposer",
     "SelectiveOffloader",
     "DecomposedQuery",
+    "MultimodalQueryDecomposer",
+    "MultimodalDecomposedQuery",
     "PrivacyRLConfig",
     "PrivacyAwareEnv",
     "PrivacyConstrainedPPO",

@@ -15,10 +15,13 @@ Uses a combination of:
 import re
 import torch
 import numpy as np
-from typing import Tuple, List, Dict, Optional, Union
+from typing import Tuple, List, Dict, Optional, Union, Any, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from .image_sensitivity import ImageSensitivityClassifier
 
 
 class SensitivityLevel(IntEnum):
@@ -496,6 +499,97 @@ class SensitivityClassifier:
             return SensitivityLevel(round(avg_level))
         
         return SensitivityLevel.PUBLIC
+
+
+@dataclass
+class MultimodalSensitivityResult:
+    """Result of multimodal sensitivity classification"""
+    text: SensitivityResult
+    images: Dict[int, SensitivityResult]
+    combined_level: SensitivityLevel
+    combined_score: float
+    explanation: str
+
+
+class MultimodalSensitivityClassifier:
+    """
+    Multimodal sensitivity classifier (text + images).
+    
+    This class aggregates text sensitivity with per-image sensitivity and
+    provides a combined score/level for downstream routing or analysis.
+    """
+    
+    def __init__(
+        self,
+        text_classifier: Optional[SensitivityClassifier] = None,
+        image_classifier: Optional["ImageSensitivityClassifier"] = None,
+        use_image_sensitivity: bool = False,
+    ):
+        self.text_classifier = text_classifier or SensitivityClassifier(
+            use_ner=False,
+            use_ml=False,
+        )
+        if image_classifier is not None:
+            self.image_classifier = image_classifier
+        elif use_image_sensitivity:
+            from .image_sensitivity import ImageSensitivityClassifier
+            self.image_classifier = ImageSensitivityClassifier(use_face_detection=True, use_ocr=False)
+        else:
+            self.image_classifier = None
+    
+    def classify(
+        self,
+        text: str,
+        images: Optional[Dict[int, Any]] = None,
+        simulate_images: bool = False,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> MultimodalSensitivityResult:
+        """
+        Classify sensitivity for text + images.
+        
+        Args:
+            text: Input query text
+            images: Dict of {image_index: image_path_or_array}
+            simulate_images: Use simulated image sensitivity when images unavailable
+            context: Optional context for simulation
+        """
+        text_result = self.text_classifier.classify(text)
+        image_results: Dict[int, SensitivityResult] = {}
+        
+        if images and self.image_classifier:
+            for idx, img in images.items():
+                image_results[idx] = self.image_classifier.classify(img)
+        elif simulate_images:
+            from .image_sensitivity import ImageSensitivityClassifier
+            sim = ImageSensitivityClassifier(use_face_detection=False, use_ocr=False)
+            ctx = context or {"prompt": text}
+            for idx in [0, 1, 2]:
+                image_results[idx] = sim.classify_simulated(idx, ctx)
+        
+        # Combine scores (average over available modalities)
+        scores = [text_result.score] + [r.score for r in image_results.values()]
+        combined_score = float(np.mean(scores)) if scores else 0.0
+        
+        if combined_score >= 0.7:
+            combined_level = SensitivityLevel.PRIVATE
+        elif combined_score >= 0.4:
+            combined_level = SensitivityLevel.SEMI_SENSITIVE
+        else:
+            combined_level = SensitivityLevel.PUBLIC
+        
+        explanation = f"text={text_result.level.name}"
+        if image_results:
+            explanation += ", images=" + ",".join(
+                f"{idx}:{res.level.name}" for idx, res in image_results.items()
+            )
+        
+        return MultimodalSensitivityResult(
+            text=text_result,
+            images=image_results,
+            combined_level=combined_level,
+            combined_score=combined_score,
+            explanation=explanation,
+        )
     
     def _calculate_score(
         self, 

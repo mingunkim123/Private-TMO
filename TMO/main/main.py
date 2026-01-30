@@ -22,8 +22,8 @@ if __name__ == '__main__':
         dataset = json.load(f)
 
     # 환경 설정 변수 초기화
-    # weights: [알파(가중치), 연관성 베타, 지연시간 베타, 사용량 베타, 보안 베타]
-    weights = [args.alpha, args.beta_association, args.beta_latency, args.beta_usage, args.beta_security]
+    # weights: [알파, 연관성 베타, 지연시간 베타, 사용량 베타, 보안 베타, 모달리티 프라이버시 베타]
+    weights = [args.alpha, args.beta_association, args.beta_latency, args.beta_usage, args.beta_security, args.beta_modality_privacy]
     latency_budget = args.latency_budget  # 지연시간 예산 (제약조건)
     usage_budget = args.usage_budget      # 사용량 예산 (제약조건)
     privacy_budget = args.privacy_budget  # 프라이버시 예산 (제약조건)

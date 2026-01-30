@@ -17,6 +17,36 @@ from enum import Enum
 
 from .config import PrivacyTMOConfig, PrivacyConfig
 from .sensitivity_classifier import SensitivityClassifier, SensitivityLevel, SensitivityResult
+from .image_sensitivity import ImageSensitivityClassifier
+
+# TMO action -> modality indices mapping (0=local, 1+=cloud with image combos)
+ACTION_TO_MODALITY_INDICES = {
+    0: [], 1: [], 2: [0], 3: [1], 4: [2],
+    5: [0, 1], 6: [0, 2], 7: [1, 2], 8: [0, 1, 2],
+}
+
+
+@dataclass
+class MultimodalSensitivity:
+    """Result of multimodal sensitivity analysis (text + images)"""
+    text: SensitivityResult
+    images: Dict[int, SensitivityResult]  # {0: ..., 1: ..., 2: ...}
+    
+    def get_modality_risk(self, modality_indices: List[int]) -> float:
+        """
+        Compute privacy risk for selected image modalities sent to cloud.
+        Text risk is handled separately (privacy_risk) to avoid double-counting.
+        
+        Args:
+            modality_indices: Image indices sent to cloud (0, 1, 2)
+            
+        Returns:
+            Normalized risk (0.0 to 1.0)
+        """
+        if not modality_indices or not self.images:
+            return 0.0
+        risk = sum(self.images[idx].score for idx in modality_indices if idx in self.images)
+        return min(risk / len(modality_indices), 1.0)
 
 
 class OffloadingDecision(Enum):
@@ -106,6 +136,7 @@ class PrivacyManager:
         config: Optional[PrivacyTMOConfig] = None,
         enable_ner: bool = True,
         enable_ml: bool = False,  # Disabled by default (requires training)
+        enable_image_sensitivity: bool = False,
     ):
         self.config = config or PrivacyTMOConfig()
         self.privacy_config = self.config.privacy
@@ -116,6 +147,12 @@ class PrivacyManager:
             use_ml=enable_ml,
             device="cpu",  # Use CPU for classifier (save GPU for LLM)
         )
+        
+        # Initialize image sensitivity classifier (optional)
+        self.image_classifier = ImageSensitivityClassifier(
+            use_face_detection=enable_image_sensitivity,
+            use_ocr=False,
+        ) if enable_image_sensitivity else None
         
         # Initialize privacy budget
         self.budget = PrivacyBudget(epsilon=self.privacy_config.privacy_budget)
@@ -143,6 +180,69 @@ class PrivacyManager:
             SensitivityResult with classification details
         """
         return self.classifier.classify(query)
+    
+    def analyze_multimodal(
+        self,
+        text: str,
+        images: Optional[Dict[int, Any]] = None,
+        simulate_image_sensitivity: bool = False,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> MultimodalSensitivity:
+        """
+        Analyze sensitivity of text + images for modality-aware offloading.
+        
+        Args:
+            text: User query text
+            images: Dict of {image_index: image_path_or_array} (optional)
+            simulate_image_sensitivity: Use simulated scores when images unavailable
+            context: Context for simulation (task_cat, prompt, etc.)
+            
+        Returns:
+            MultimodalSensitivity with text and per-image sensitivity
+        """
+        text_sens = self.analyze_query(text)
+        image_sens: Dict[int, SensitivityResult] = {}
+        
+        if images:
+            for idx, img in images.items():
+                if self.image_classifier:
+                    image_sens[idx] = self.image_classifier.classify(img)
+                else:
+                    image_sens[idx] = SensitivityResult(
+                        level=SensitivityLevel.PUBLIC,
+                        score=0.0,
+                        confidence=0.5,
+                        detected_entities=[],
+                        explanation="Image classifier not enabled",
+                    )
+        elif simulate_image_sensitivity:
+            from .image_sensitivity import ImageSensitivityClassifier
+            sim_classifier = ImageSensitivityClassifier(use_face_detection=False, use_ocr=False)
+            ctx = context or {"prompt": text}
+            for i in [0, 1, 2]:
+                image_sens[i] = sim_classifier.classify_simulated(i, ctx)
+        
+        return MultimodalSensitivity(text=text_sens, images=image_sens)
+    
+    def calculate_modality_privacy_risk(
+        self,
+        mm_sensitivity: MultimodalSensitivity,
+        action: int,
+    ) -> float:
+        """
+        Compute privacy risk for given action based on modality selection.
+        
+        Args:
+            mm_sensitivity: Result from analyze_multimodal
+            action: TMO action (0=local, 1-8=cloud with modality combos)
+            
+        Returns:
+            Privacy risk (0.0 to 1.0)
+        """
+        if action == 0:
+            return 0.0
+        modality_indices = ACTION_TO_MODALITY_INDICES.get(action, [])
+        return mm_sensitivity.get_modality_risk(modality_indices)
     
     def calculate_privacy_risk(
         self, 

@@ -47,3 +47,6 @@ seaborn>=0.13.0
 # Profiling (for Jetson experiments)
 py3nvml>=0.2.7  # GPU monitoring
 psutil>=5.9.0   # System monitoring
+
+# Image sensitivity (multimodal privacy)
+opencv-python>=4.8.0  # Face detection for image sensitivity

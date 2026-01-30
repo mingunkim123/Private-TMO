@@ -12,6 +12,9 @@ sys.path.append('/data/my_tmo_project')
 import tmo_interface
 from privacy_tmo import PrivacyManager, QueryDecomposer, ResponseAggregator, AggregationStrategy
 
+# Task index to category for multimodal context
+TASK_INDEX_TO_CAT = {0: 'Assistive System', 1: 'Message Editing', 2: 'Query', 3: 'Recommendation'}
+
 def preprocess_data(dataset):
     episodes = [] 
     task_to_index = {'Assistive System': 0, 'Message Editing': 1, 'Query': 2, 'Recommendation': 3}
@@ -90,7 +93,11 @@ class M4A1_Env(gym.Env):
         self.action_space = gym.spaces.Discrete(9)
         self.base_state_dim = 5 * self.time_span
         self.enable_privacy_features = True
-        self.privacy_feature_dim = 3  # [sensitivity_level, sensitivity_score, budget_ratio]
+        self.use_image_sensitivity = getattr(args, 'use_image_sensitivity', False)
+        self.simulate_image_sensitivity = getattr(args, 'simulate_image_sensitivity', False)
+        self.enable_multimodal_privacy = self.use_image_sensitivity or self.simulate_image_sensitivity
+        # [sensitivity_level, sensitivity_score, budget_ratio] + [img0_sens, img1_sens, img2_sens] when multimodal
+        self.privacy_feature_dim = 6 if self.enable_multimodal_privacy else 3
         self.sensitivity_level_idx = self.base_state_dim
         self.sensitivity_score_idx = self.base_state_dim + 1
         self.budget_ratio_idx = self.base_state_dim + 2
@@ -116,7 +123,11 @@ class M4A1_Env(gym.Env):
         self.usage_costs = [self.local_usage_cost] + self.cloud_usage_cost
         self.action_to_modality_indices = {0: [], 1: [], 2: [0], 3: [1], 4: [2], 5: [0, 1], 6: [0, 2], 7: [1, 2], 8: [0, 1, 2]}
 
-        self.privacy_manager = PrivacyManager(enable_ner=False, enable_ml=False)
+        self.privacy_manager = PrivacyManager(
+            enable_ner=False,
+            enable_ml=False,
+            enable_image_sensitivity=self.use_image_sensitivity,
+        )
         if privacy_budget is None:
             privacy_budget = getattr(args, "privacy_budget", 1.0)
         if self.privacy_manager.budget:
@@ -182,7 +193,15 @@ class M4A1_Env(gym.Env):
         self.current_states, self.current_actions, self.current_rewards, self.association_scores = self.episodes[self.current_episode]
         current_prompt = self._get_current_prompt()
         sensitivity_result = self.privacy_manager.analyze_query(current_prompt)
-        return self._augment_state(self.current_states[self.current_step], sensitivity_result), {}
+        mm_sensitivity = None
+        if self.enable_multimodal_privacy:
+            mm_sensitivity = self.privacy_manager.analyze_multimodal(
+                text=current_prompt,
+                images=None,
+                simulate_image_sensitivity=self.simulate_image_sensitivity,
+                context=self._get_current_context(),
+            )
+        return self._augment_state(self.current_states[self.current_step], sensitivity_result, mm_sensitivity), {}
         
     def normalization(self, values):
         min_value = min(values); max_value = max(values)
@@ -207,7 +226,14 @@ class M4A1_Env(gym.Env):
             ]
             return sample_prompts[self.current_step % len(sample_prompts)]
 
-    def _augment_state(self, base_state, sensitivity_result=None):
+    def _get_current_context(self):
+        """Get context for simulated image sensitivity (task_cat, prompt)."""
+        prompt = self._get_current_prompt()
+        task_idx = int(self.current_states[self.current_step][-1]) if self.current_step < len(self.current_states) else 0
+        task_cat = TASK_INDEX_TO_CAT.get(task_idx, 'Query')
+        return {'prompt': prompt, 'task_cat': task_cat}
+
+    def _augment_state(self, base_state, sensitivity_result=None, mm_sensitivity=None):
         if not self.enable_privacy_features:
             return np.array(base_state, dtype=np.float32)
 
@@ -224,8 +250,16 @@ class M4A1_Env(gym.Env):
         else:
             budget_ratio = 1.0
 
-        extra = np.array([sensitivity_level, sensitivity_score, budget_ratio], dtype=np.float32)
-        return np.concatenate([np.array(base_state, dtype=np.float32), extra])
+        extra = [sensitivity_level, sensitivity_score, budget_ratio]
+
+        if self.enable_multimodal_privacy and mm_sensitivity:
+            for i in [0, 1, 2]:
+                img_sens = mm_sensitivity.images.get(i)
+                extra.append(img_sens.score if img_sens else 0.0)
+        elif self.enable_multimodal_privacy:
+            extra.extend([0.0, 0.0, 0.0])
+
+        return np.concatenate([np.array(base_state, dtype=np.float32), np.array(extra, dtype=np.float32)])
 
     def to_one_hot(self, action):
         action = action.item() if isinstance(action, np.ndarray) else action
@@ -251,6 +285,16 @@ class M4A1_Env(gym.Env):
         current_prompt = self._get_current_prompt()
         sensitivity_result = self.privacy_manager.analyze_query(current_prompt)
 
+        # [New] 멀티모달 민감도 분석 (이미지 포함)
+        mm_sensitivity = None
+        if self.enable_multimodal_privacy:
+            mm_sensitivity = self.privacy_manager.analyze_multimodal(
+                text=current_prompt,
+                images=None,
+                simulate_image_sensitivity=self.simulate_image_sensitivity,
+                context=self._get_current_context(),
+            )
+
         # ---------------------------------------------------------
         # [New 2] 보안 점수 계산 (PrivacyManager 사용)
         # ---------------------------------------------------------
@@ -258,6 +302,9 @@ class M4A1_Env(gym.Env):
         privacy_risk = self.privacy_manager.calculate_privacy_risk(
             sensitivity_result, offload_to_cloud=(action > 0)
         )
+        modality_privacy_risk = self.privacy_manager.calculate_modality_privacy_risk(
+            mm_sensitivity, action
+        ) if mm_sensitivity else 0.0
 
         # ---------------------------------------------------------
         # [New 3] 로컬/클라우드/하이브리드 실행
@@ -300,6 +347,7 @@ class M4A1_Env(gym.Env):
         # [New 4] 최종 보상 함수 수정 (+ 프라이버시 리스크/예산 반영)
         # ---------------------------------------------------------
         w_security = self.weights[4] if len(self.weights) > 4 else 0.0
+        w_modality = self.weights[5] if len(self.weights) > 5 else 0.0
 
         if action > 0 and privacy_risk > 0:
             self.privacy_manager.budget.consume(
@@ -322,6 +370,7 @@ class M4A1_Env(gym.Env):
                 - self.weights[3] * norm_usage_cost
                 + w_security * security_score
                 - w_security * privacy_risk
+                - w_modality * modality_privacy_risk
                 + budget_bonus)
 
         self.current_step += 1
@@ -329,7 +378,19 @@ class M4A1_Env(gym.Env):
         if not done:
             next_prompt = self._get_current_prompt()
             next_sensitivity = self.privacy_manager.analyze_query(next_prompt)
-            next_state = self._augment_state(self.current_states[self.current_step], next_sensitivity)
+            next_mm_sensitivity = None
+            if self.enable_multimodal_privacy:
+                next_mm_sensitivity = self.privacy_manager.analyze_multimodal(
+                    text=next_prompt,
+                    images=None,
+                    simulate_image_sensitivity=self.simulate_image_sensitivity,
+                    context=self._get_current_context(),
+                )
+            next_state = self._augment_state(
+                self.current_states[self.current_step],
+                next_sensitivity,
+                next_mm_sensitivity,
+            )
         else:
             next_state = np.zeros(self.base_state_dim + (self.privacy_feature_dim if self.enable_privacy_features else 0)) - 1
             
@@ -375,12 +436,24 @@ class M4A1_Env(gym.Env):
 
         current_prompt = self._get_current_prompt()
         sensitivity_result = self.privacy_manager.analyze_query(current_prompt)
+        mm_sensitivity = None
+        if self.enable_multimodal_privacy:
+            mm_sensitivity = self.privacy_manager.analyze_multimodal(
+                text=current_prompt,
+                images=None,
+                simulate_image_sensitivity=self.simulate_image_sensitivity,
+                context=self._get_current_context(),
+            )
         security_score = self.privacy_manager.get_security_score(current_prompt, action)
         privacy_risk = self.privacy_manager.calculate_privacy_risk(
             sensitivity_result, offload_to_cloud=(action > 0)
         )
+        modality_privacy_risk = self.privacy_manager.calculate_modality_privacy_risk(
+            mm_sensitivity, action
+        ) if mm_sensitivity else 0.0
 
         w_security = self.weights[4] if len(self.weights) > 4 else 0.0
+        w_modality = self.weights[5] if len(self.weights) > 5 else 0.0
         if self.privacy_manager.budget and self.privacy_manager.budget.epsilon > 0:
             budget_ratio = self.privacy_manager.budget.remaining / self.privacy_manager.budget.epsilon
             budget_ratio = min(max(budget_ratio, 0.0), 1.0)
@@ -394,6 +467,7 @@ class M4A1_Env(gym.Env):
                 - self.weights[3] * norm_usage_cost
                 + w_security * security_score
                 - w_security * privacy_risk
+                - w_modality * modality_privacy_risk
                 + budget_bonus)
 
         self.current_step += 1
@@ -402,7 +476,15 @@ class M4A1_Env(gym.Env):
             next_base = np.array(list(state_base[5:]) + real_action + self.current_states[self.current_step][-1:], dtype=int)
             next_prompt = self._get_current_prompt()
             next_sensitivity = self.privacy_manager.analyze_query(next_prompt)
-            next_state = self._augment_state(next_base, next_sensitivity)
+            next_mm_sensitivity = None
+            if self.enable_multimodal_privacy:
+                next_mm_sensitivity = self.privacy_manager.analyze_multimodal(
+                    text=next_prompt,
+                    images=None,
+                    simulate_image_sensitivity=self.simulate_image_sensitivity,
+                    context=self._get_current_context(),
+                )
+            next_state = self._augment_state(next_base, next_sensitivity, next_mm_sensitivity)
         else:
             next_state = np.zeros(self.base_state_dim + (self.privacy_feature_dim if self.enable_privacy_features else 0)) - 1
         return next_state, response_score, association_score, total_latency, total_usage, reward, done
