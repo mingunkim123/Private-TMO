@@ -41,14 +41,14 @@ The RL agent learns to select the optimal modality combination (action 0–8) wh
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         Sensitivity Analysis                                │
 │  ┌─────────────────────┐    ┌───────────────────────────────────────────┐   │
-│  │   Text Classifier   │    │         Image Classifier (x3)              │   │
+│  │   Text Classifier   │    │         Image Classifier (x3)             │   │
 │  │  Rule + NER + ML    │    │   Face Detection / OCR / Simulation       │   │
 │  │                     │    │                                           │   │
 │  │  PUBLIC | SEMI |    │    │   img0: 0.4   img1: 0.2   img2: 0.7       │   │
 │  │       PRIVATE       │    │                                           │   │
 │  └──────────┬──────────┘    └──────────────────┬────────────────────────┘   │
 │             │                                  │                            │
-│             └──────────────┬───────────────────┘                             │
+│             └──────────────┬───────────────────┘                            │
 │                            ▼                                                │
 │              ┌───────────────────────────────┐                              │
 │              │   Multimodal Sensitivity      │                              │
@@ -62,7 +62,7 @@ The RL agent learns to select the optimal modality combination (action 0–8) wh
 │                                                                             │
 │   State: [history] + [text_sens, text_score, budget] + [img0, img1, img2]   │
 │                                                                             │
-│   Action: 0 (Local) | 1-8 (Cloud + Modality Combinations)                  │
+│   Action: 0 (Local) | 1-8 (Cloud + Modality Combinations)                   │
 └─────────────────────────────────────┬───────────────────────────────────────┘
                                       │
                     ┌─────────────────┴─────────────────┐
